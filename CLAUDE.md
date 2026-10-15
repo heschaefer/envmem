@@ -209,7 +209,7 @@ Cada fatia entrega algo funcionando de ponta a ponta:
 2. `POST /v1/unseal` com a chave gerada pelo `keygen`
 3. `PUT` do segredo `DB_PASSWORD` no projeto `demo`
 4. `psql` mostra o valor ilegível na tabela `secrets`
-5. `envmem run --projeto demo -- sh -c 'echo PID=$$ SENHA=$DB_PASSWORD'` mostra a senha e o mesmo PID que o CLI imprimiu antes do exec
+5. `envmem run --verbose --projeto demo -- sh -c 'echo PID=$$ SENHA=$DB_PASSWORD'` mostra a senha e o mesmo PID que o CLI imprimiu antes do exec (sem `--verbose`, o CLI não imprime nada)
 6. Reiniciar o servidor: volta selado
 
 Ordem sugerida: Fatia 1 completa (prova do PID); depois Docker + PostgreSQL + goose + store; `envelope.go` com quatro testes (ida e volta, texto adulterado falha, DEK errada falha, chave-mestra errada falha); `seal.go` + rota de unseal + valor de verificação + health; handlers de GET e PUT usando store e vault; teste de ponta a ponta; capturas para `docs/evidencias/`.

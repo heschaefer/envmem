@@ -13,7 +13,8 @@ import (
 // execWithSecrets substitui o processo do envmem pelo comando, com os
 // segredos somados ao ambiente atual. Se der certo, não retorna: o PID passa
 // a ser do comando e o envmem deixa de existir. Só retorna em caso de erro.
-func execWithSecrets(command []string, secrets []client.Secret) error {
+// Com verbose, imprime o PID antes do exec (usado na demonstração).
+func execWithSecrets(command []string, secrets []client.Secret, verbose bool) error {
 	path, err := exec.LookPath(command[0])
 	if err != nil {
 		return err
@@ -24,7 +25,9 @@ func execWithSecrets(command []string, secrets []client.Secret) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "envmem: pid %d, exec %s\n", os.Getpid(), path)
+	if verbose {
+		fmt.Fprintf(os.Stderr, "envmem: pid %d, exec %s\n", os.Getpid(), path)
+	}
 	return syscall.Exec(path, command, env)
 }
 

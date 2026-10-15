@@ -54,44 +54,57 @@ func TestBuildEnvRejects(t *testing.T) {
 }
 
 // helperEnv faz o binário de teste, quando reexecutado, agir como o
-// "envmem run" em vez de rodar os testes.
+// "envmem run" em vez de rodar os testes. O valor diz se é com --verbose.
 const helperEnv = "ENVMEM_TEST_EXEC_HELPER"
+
+// runHelper roda, num processo filho, execWithSecrets com o comando
+// sh -c 'echo "$$ $DB_PASSWORD"'. Devolve o PID do filho, stdout e stderr.
+func runHelper(t *testing.T, testName, mode string) (pid int, stdout, stderr string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^"+testName+"$")
+	cmd.Env = append(os.Environ(), helperEnv+"="+mode)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("processo auxiliar: %v\nstderr: %s", err, errOut.String())
+	}
+	return cmd.Process.Pid, out.String(), errOut.String()
+}
+
+// helperExec é o lado do processo filho: faz o exec de verdade.
+func helperExec(verbose bool) {
+	err := execWithSecrets(
+		[]string{"sh", "-c", `echo "$$ $DB_PASSWORD"`},
+		[]client.Secret{{Key: "DB_PASSWORD", Value: "s3gr3do"}},
+		verbose,
+	)
+	fmt.Fprintln(os.Stderr, "exec falhou:", err)
+	os.Exit(3)
+}
 
 // TestExecKeepsPID prova o mecanismo central: o comando roda no MESMO PID do
 // envmem (não é um processo filho) e recebe o segredo no ambiente.
 //
 // O teste reexecuta o próprio binário de teste como processo filho. Esse
-// filho chama execWithSecrets, que imprime o PID e faz o exec de "sh". O
-// shell imprime $$ (o próprio PID) e $DB_PASSWORD. Os três PIDs têm de ser
-// iguais: o que o teste criou, o que o envmem imprimiu e o do shell.
+// filho chama execWithSecrets com verbose, que imprime o PID e faz o exec de
+// "sh". O shell imprime $$ (o próprio PID) e $DB_PASSWORD. Os três PIDs têm
+// de ser iguais: o que o teste criou, o que o envmem imprimiu e o do shell.
 func TestExecKeepsPID(t *testing.T) {
-	if os.Getenv(helperEnv) == "1" {
-		err := execWithSecrets(
-			[]string{"sh", "-c", `echo "$$ $DB_PASSWORD"`},
-			[]client.Secret{{Key: "DB_PASSWORD", Value: "s3gr3do"}},
-		)
-		fmt.Fprintln(os.Stderr, "exec falhou:", err)
-		os.Exit(3)
+	if os.Getenv(helperEnv) == "verbose" {
+		helperExec(true)
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestExecKeepsPID$")
-	cmd.Env = append(os.Environ(), helperEnv+"=1")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("processo auxiliar: %v\nstderr: %s", err, stderr.String())
-	}
-	spawned := cmd.Process.Pid
+	spawned, stdout, stderr := runHelper(t, "TestExecKeepsPID", "verbose")
 
 	var printed int
-	if _, err := fmt.Sscanf(stderr.String(), "envmem: pid %d,", &printed); err != nil {
-		t.Fatalf("PID não encontrado no stderr %q: %v", stderr.String(), err)
+	if _, err := fmt.Sscanf(stderr, "envmem: pid %d,", &printed); err != nil {
+		t.Fatalf("PID não encontrado no stderr %q: %v", stderr, err)
 	}
 
 	var shellPID int
 	var value string
-	if _, err := fmt.Sscanf(strings.TrimSpace(stdout.String()), "%d %s", &shellPID, &value); err != nil {
-		t.Fatalf("saída inesperada do shell %q: %v", stdout.String(), err)
+	if _, err := fmt.Sscanf(strings.TrimSpace(stdout), "%d %s", &shellPID, &value); err != nil {
+		t.Fatalf("saída inesperada do shell %q: %v", stdout, err)
 	}
 
 	if printed != spawned || shellPID != spawned {
@@ -102,8 +115,23 @@ func TestExecKeepsPID(t *testing.T) {
 	}
 }
 
+// Sem --verbose, o envmem não escreve nada: a saída é só a do comando.
+func TestExecQuiet(t *testing.T) {
+	if os.Getenv(helperEnv) == "quiet" {
+		helperExec(false)
+	}
+
+	spawned, stdout, stderr := runHelper(t, "TestExecQuiet", "quiet")
+	if stderr != "" {
+		t.Errorf("stderr deveria estar vazio, veio %q", stderr)
+	}
+	if want := fmt.Sprintf("%d s3gr3do\n", spawned); stdout != want {
+		t.Errorf("stdout = %q, quero %q", stdout, want)
+	}
+}
+
 func TestExecCommandNotFound(t *testing.T) {
-	err := execWithSecrets([]string{"comando-que-nao-existe-envmem"}, nil)
+	err := execWithSecrets([]string{"comando-que-nao-existe-envmem"}, nil, false)
 	if err == nil {
 		t.Fatal("esperava erro")
 	}
