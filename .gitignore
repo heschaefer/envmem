@@ -1,0 +1,12 @@
+# binários
+/bin/
+
+# configuração local e certificados gerados
+.env
+*.pem
+*.key
+*.crt
+
+# editor e sistema
+.vscode/
+.DS_Store
