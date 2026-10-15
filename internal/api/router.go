@@ -34,7 +34,8 @@ func NewRouter(logger *slog.Logger, st Store, v *vault.Vault) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST /v1/unseal", s.handleUnseal)
-	mux.HandleFunc("GET /v1/projects/{project}/secrets", handleListSecrets)
+	mux.HandleFunc("GET /v1/projects/{project}/secrets", s.handleListSecrets)
+	mux.HandleFunc("PUT /v1/projects/{project}/secrets/{key}", s.handlePutSecret)
 
 	// Qualquer outra rota (ou método) cai aqui, para que até o 404 siga o
 	// formato de erro JSON da API em vez do texto puro do net/http.

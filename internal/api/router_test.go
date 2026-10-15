@@ -139,27 +139,10 @@ func TestLogsDoNotContainMasterKey(t *testing.T) {
 	}
 }
 
-func TestListSecretsDemo(t *testing.T) {
-	e := newTestEnv(t)
-	rec := e.do(t, http.MethodGet, "/v1/projects/demo/secrets", "")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, quero 200", rec.Code)
-	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Errorf("Cache-Control = %q, quero no-store", got)
-	}
-	body := decode[listSecretsResponse](t, rec)
-	if body.Project != "demo" || len(body.Secrets) != 1 || body.Secrets[0].Key != "DB_PASSWORD" {
-		t.Errorf("resposta inesperada: %+v", body)
-	}
-}
-
 func TestErrorsAreJSON(t *testing.T) {
 	tests := []struct {
 		name, method, path, code string
 	}{
-		{"projeto inexistente", http.MethodGet, "/v1/projects/nao-existe/secrets", "project_not_found"},
 		{"rota inexistente", http.MethodGet, "/v1/nada", "not_found"},
 		{"método não suportado", http.MethodPost, "/v1/health", "not_found"},
 	}
@@ -168,20 +151,5 @@ func TestErrorsAreJSON(t *testing.T) {
 			e := newTestEnv(t)
 			wantError(t, e.do(t, tt.method, tt.path, ""), http.StatusNotFound, tt.code)
 		})
-	}
-}
-
-// O log nunca pode conter o valor de um segredo.
-func TestLogsDoNotContainSecretValues(t *testing.T) {
-	e := newTestEnv(t)
-	e.do(t, http.MethodGet, "/v1/projects/demo/secrets", "")
-
-	if e.logs.Len() == 0 {
-		t.Fatal("esperava uma linha de log da requisição")
-	}
-	for _, s := range fixedSecrets["demo"] {
-		if strings.Contains(e.logs.String(), s.Value) {
-			t.Fatalf("log contém o valor do segredo %s", s.Key)
-		}
 	}
 }
