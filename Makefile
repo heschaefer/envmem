@@ -4,6 +4,7 @@ BIN := bin
 
 build:
 	go build -o $(BIN)/envmem-server ./cmd/server
+	go build -o $(BIN)/envmem ./cmd/cli
 
 run-server:
 	go run ./cmd/server
