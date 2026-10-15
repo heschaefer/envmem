@@ -15,9 +15,15 @@ import (
 	"github.com/heschaefer/envmem/internal/api"
 	"github.com/heschaefer/envmem/internal/config"
 	"github.com/heschaefer/envmem/internal/store"
+	"github.com/heschaefer/envmem/internal/vault"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "keygen" {
+		cmdKeygen()
+		return
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	cfg, err := config.LoadServer(os.Args[1:], os.Stderr)
@@ -52,8 +58,10 @@ func serve(logger *slog.Logger, cfg config.Server) error {
 	logger.Info("banco conectado e migrações aplicadas")
 
 	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: api.NewRouter(logger),
+		Addr: cfg.ListenAddr,
+		// O cofre nasce selado: a chave-mestra só chega pelo POST /v1/unseal
+		// e fica só em memória. Reiniciar o servidor = selar.
+		Handler: api.NewRouter(logger, st, vault.New()),
 		// Limites de tempo evitam que clientes lentos (ou maliciosos) prendam
 		// conexões abertas indefinidamente.
 		ReadHeaderTimeout: 5 * time.Second,
