@@ -22,8 +22,9 @@ func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	projeto := fs.String("projeto", "", "projeto cujos segredos serão injetados (obrigatório)")
 	servidor := fs.String("servidor", defaultServer, "endereço do envmem-server")
+	verbose := fs.Bool("verbose", false, "mostra o PID e o binário antes do exec")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Uso: envmem run --projeto X [--servidor URL] -- comando [args...]")
+		fmt.Fprintln(fs.Output(), "Uso: envmem run --projeto X [--servidor URL] [--verbose] -- comando [args...]")
 		fs.PrintDefaults()
 	}
 	// O flag para de ler opções no "--"; o que vem depois é o comando,
@@ -54,7 +55,7 @@ func cmdRun(args []string) int {
 		return 1
 	}
 
-	err = execWithSecrets(command, secrets)
+	err = execWithSecrets(command, secrets, *verbose)
 
 	// Só chega aqui se o exec não aconteceu.
 	fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
