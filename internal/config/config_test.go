@@ -18,6 +18,7 @@ func TestLoadServerPrecedence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://teste")
 			t.Setenv("ENVMEM_LISTEN_ADDR", tt.env)
 			cfg, err := LoadServer(tt.args, io.Discard)
 			if err != nil {
@@ -31,7 +32,15 @@ func TestLoadServerPrecedence(t *testing.T) {
 }
 
 func TestLoadServerUnknownFlag(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://teste")
 	if _, err := LoadServer([]string{"-nao-existe"}, io.Discard); err == nil {
 		t.Fatal("esperava erro para flag desconhecida")
+	}
+}
+
+func TestLoadServerRequiresDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	if _, err := LoadServer(nil, io.Discard); err == nil {
+		t.Fatal("esperava erro sem DATABASE_URL")
 	}
 }

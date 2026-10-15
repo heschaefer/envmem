@@ -14,6 +14,7 @@ import (
 
 	"github.com/heschaefer/envmem/internal/api"
 	"github.com/heschaefer/envmem/internal/config"
+	"github.com/heschaefer/envmem/internal/store"
 )
 
 func main() {
@@ -24,6 +25,7 @@ func main() {
 		return
 	}
 	if err != nil {
+		logger.Error("configuração inválida", "err", err)
 		os.Exit(2)
 	}
 
@@ -33,9 +35,22 @@ func main() {
 	}
 }
 
-// serve sobe o servidor HTTP e o encerra de forma ordenada ao receber
-// SIGINT (Ctrl+C) ou SIGTERM (docker stop).
+// serve conecta ao banco, aplica as migrações, sobe o servidor HTTP e o
+// encerra de forma ordenada ao receber SIGINT (Ctrl+C) ou SIGTERM.
 func serve(logger *slog.Logger, cfg config.Server) error {
+	startCtx, cancelStart := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelStart()
+
+	st, err := store.Open(startCtx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.Migrate(startCtx); err != nil {
+		return err
+	}
+	logger.Info("banco conectado e migrações aplicadas")
+
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: api.NewRouter(logger),
