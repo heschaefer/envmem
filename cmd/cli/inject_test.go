@@ -41,6 +41,9 @@ func TestBuildEnvRejects(t *testing.T) {
 		{"nome com =", []client.Secret{{Key: "PATH=/tmp/x", Value: "v"}}},
 		{"nome com espaço", []client.Secret{{Key: "A B", Value: "x"}}},
 		{"nome com hífen", []client.Secret{{Key: "A-B", Value: "x"}}},
+		// Nomes reservados: os casos completos estão em internal/envname.
+		{"nome bloqueado", []client.Secret{{Key: "LD_PRELOAD", Value: "/tmp/x.so"}}},
+		{"um bloqueado entre válidos", []client.Secret{{Key: "DB_PASSWORD", Value: "x"}, {Key: "PATH", Value: "/tmp"}}},
 		{"valor com byte nulo", []client.Secret{{Key: "A", Value: "x\x00y"}}},
 		{"chave repetida", []client.Secret{{Key: "A", Value: "1"}, {Key: "A", Value: "2"}}},
 	}

@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/heschaefer/envmem/internal/client"
+	"github.com/heschaefer/envmem/internal/envname"
 )
 
 // execWithSecrets substitui o processo do envmem pelo comando, com os
@@ -36,8 +37,11 @@ func execWithSecrets(command []string, secrets []client.Secret, verbose bool) er
 func buildEnv(base []string, secrets []client.Secret) ([]string, error) {
 	replaced := make(map[string]bool, len(secrets))
 	for _, s := range secrets {
-		if !validEnvName(s.Key) {
-			return nil, fmt.Errorf("nome de variável inválido vindo do servidor: %q", s.Key)
+		// Defesa em profundidade: o servidor também confere o nome ao gravar
+		// (Fatia 2), mas o CLI não confia nisso. Se um nome perigoso chegar,
+		// nada é executado.
+		if err := envname.Check(s.Key); err != nil {
+			return nil, fmt.Errorf("segredo recusado: %w", err)
 		}
 		if replaced[s.Key] {
 			return nil, fmt.Errorf("segredo %s repetido na resposta do servidor", s.Key)
@@ -59,21 +63,4 @@ func buildEnv(base []string, secrets []client.Secret) ([]string, error) {
 		env = append(env, s.Key+"="+s.Value)
 	}
 	return env, nil
-}
-
-// validEnvName aceita nomes no formato portável do POSIX: letras, dígitos e
-// "_", sem começar por dígito.
-func validEnvName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i, c := range name {
-		switch {
-		case c == '_', 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z':
-		case '0' <= c && c <= '9' && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
 }
