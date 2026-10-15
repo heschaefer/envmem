@@ -141,6 +141,7 @@ Um **gerenciador de segredos auto-hospedado** para equipes de desenvolvimento. O
 - O `run` não cria arquivos em disco
 - A chave-mestra nunca é gravada pelo servidor
 - Esconder uma opção no menu não é controle de acesso: toda permissão é conferida no servidor
+- Nomes de segredos passam por `internal/envname`: formato POSIX e bloqueio de variáveis que executam código ou trocam binários (`PATH`, `LD_*`, `DYLD_*`, `GIT_*`, `NODE_OPTIONS` etc.). O CLI confere antes de injetar; o servidor confere no `PUT` (Fatia 2). É camada adicional, não barreira completa
 
 ## Mapa de arquivos
 
@@ -152,6 +153,7 @@ internal/vault/{seal, envelope, keys}.go (+ testes)
 internal/store/{db, migrate, models, users, sessions, projects, members, secrets, audit, vault_meta}.go
 internal/auth/{password, token, middleware, rbac}.go (+ testes)
 internal/audit/recorder.go
+internal/envname/envname.go (+ teste)
 internal/api/{router, errors, handlers_health, handlers_unseal, handlers_auth, handlers_users, handlers_projects, handlers_members, handlers_secrets, handlers_audit}.go
 internal/client/{client, auth, projects, secrets}.go
 migrations/*.sql (goose, numeradas: 00001_..., 00002_...)
@@ -216,7 +218,7 @@ Ordem sugerida: Fatia 1 completa (prova do PID); depois Docker + PostgreSQL + go
 
 ## Decisões
 
-**Já tomadas** (registrar cada uma em `docs/decisoes.md`, formato ADR curto: contexto, decisão, consequências): Go e PostgreSQL 18; `syscall.Exec` no `run`; envelope encryption com AES-256-GCM; chave-mestra cifra direto as DEKs (decisão 1); unseal por `POST /v1/unseal` sem autenticação, com valor de verificação (decisão 2); goose; SQL à mão com pgx; uuidv7; slog; configuração do servidor por variáveis de ambiente; TLS 1.3 com CA própria via openssl; argon2id; token opaco (decisão 3); token em arquivo com permissão 600 (decisão 4); papéis superadmin, admin, gestor e desenvolvedor, com cada ambiente como projeto separado; MFA para superadmin, admin e gestor, com reset por superadmin e sem códigos de recuperação; subcomandos diretos mais modo interativo com huh; prompt próprio do envmem no TCC II; shell supervisionado descartado; painel web fora do escopo; configuração do CLI em arquivo; auditoria em tabela append-only; testes de integração com build tag; chave-mestra gerada por `keygen` e nunca gravada.
+**Já tomadas** (registrar cada uma em `docs/decisoes.md`, formato ADR curto: contexto, decisão, consequências): Go e PostgreSQL 18; `syscall.Exec` no `run`; envelope encryption com AES-256-GCM; chave-mestra cifra direto as DEKs (decisão 1); unseal por `POST /v1/unseal` sem autenticação, com valor de verificação (decisão 2); goose; SQL à mão com pgx; uuidv7; slog; configuração do servidor por variáveis de ambiente; TLS 1.3 com CA própria via openssl; argon2id; token opaco (decisão 3); token em arquivo com permissão 600 (decisão 4); papéis superadmin, admin, gestor e desenvolvedor, com cada ambiente como projeto separado; MFA para superadmin, admin e gestor, com reset por superadmin e sem códigos de recuperação; subcomandos diretos mais modo interativo com huh; prompt próprio do envmem no TCC II; shell supervisionado descartado; painel web fora do escopo; configuração do CLI em arquivo; auditoria em tabela append-only; testes de integração com build tag; chave-mestra gerada por `keygen` e nunca gravada; segredos na resposta da API como lista de objetos (`{"key", "value"}`, com espaço para `version`); rota ou método inexistente responde 404 em JSON (não 405); flag `--servidor` no CLI, mantida como sobrescrita quando existir o `config.json`; PID antes do exec só com `--verbose`; bloqueio de nomes de variáveis perigosos (`internal/envname`).
 
 **Em aberto.** Discutir com o Henryque antes de implementar. Para cada uma, apresentar opções com prós e contras. Ele decide.
 
