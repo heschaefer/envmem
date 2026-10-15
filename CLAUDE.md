@@ -84,7 +84,7 @@ Um **gerenciador de segredos auto-hospedado** para equipes de desenvolvimento. O
 - Na imagem `postgres:18`, o volume de dados é montado em `/var/lib/postgresql` (e não em `/var/lib/postgresql/data`)
 - Volumes nomeados guardam o banco (`pgdata`), o cache de módulos Go (`gomod`) e o login do Claude Code (`claude`), que sobrevivem à recriação do container
 - O container é descartável; o código não. **Fazer push para o GitHub ao fim de cada passo**
-- O `syscall.Exec` não existe no Windows: tudo (servidor, CLI e demonstração) roda no terminal do container
+- No Windows, o `syscall.Exec` existe, mas sempre devolve erro ("not supported by windows"): o CLI compila, porém o `run` não funciona. Tudo (servidor, CLI e demonstração) roda no terminal do container
 - `Makefile` com os alvos `run-server`, `test`, `test-integration` e `check` (o banco já está de pé, não precisa de `db-up` dentro do container)
 - Git, branch principal `main`. Sem licença por enquanto
 - Diagramas: C4 no draw.io (`docs/diagramas/`); diagramas de sequência em Mermaid, dentro dos `.md`
