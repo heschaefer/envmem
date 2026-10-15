@@ -2,15 +2,38 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/heschaefer/envmem/internal/store"
+	"github.com/heschaefer/envmem/internal/vault"
 )
 
+// Store é o que a API usa do banco. *store.Store a implementa; os testes da
+// API usam uma versão em memória.
+type Store interface {
+	GetVaultMeta(ctx context.Context) (store.VaultMeta, error)
+	InsertVaultMeta(ctx context.Context, m store.VaultMeta) (bool, error)
+	LatestSecrets(ctx context.Context, project string) ([]store.SecretRow, error)
+	InsertSecretVersion(ctx context.Context, row store.SecretRow) (int, error)
+}
+
+// server reúne as dependências dos handlers.
+type server struct {
+	logger *slog.Logger
+	store  Store
+	vault  *vault.Vault
+}
+
 // NewRouter monta as rotas da API, com log de cada requisição.
-func NewRouter(logger *slog.Logger) http.Handler {
+func NewRouter(logger *slog.Logger, st Store, v *vault.Vault) http.Handler {
+	s := &server{logger: logger, store: st, vault: v}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", handleHealth)
+	mux.HandleFunc("GET /v1/health", s.handleHealth)
+	mux.HandleFunc("POST /v1/unseal", s.handleUnseal)
 	mux.HandleFunc("GET /v1/projects/{project}/secrets", handleListSecrets)
 
 	// Qualquer outra rota (ou método) cai aqui, para que até o 404 siga o

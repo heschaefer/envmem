@@ -55,6 +55,7 @@ func (e *APIError) Error() string {
 // Health é o estado do servidor.
 type Health struct {
 	Status string `json:"status"`
+	Sealed bool   `json:"sealed"`
 }
 
 // Health consulta GET /v1/health.

@@ -3,20 +3,33 @@ package client_test
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/heschaefer/envmem/internal/api"
 	"github.com/heschaefer/envmem/internal/client"
 )
 
-// newServer sobe o roteador real do servidor num endereço local de teste.
+// newServer sobe um servidor simulado com as mesmas rotas e respostas da
+// API. A integração com o servidor real (banco e cofre) é testada no teste
+// de ponta a ponta.
 func newServer(t *testing.T) *client.Client {
 	t.Helper()
-	srv := httptest.NewServer(api.NewRouter(slog.New(slog.DiscardHandler)))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"status":"ok","sealed":false}`)
+	})
+	mux.HandleFunc("GET /v1/projects/{project}/secrets", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("project") != "demo" {
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"error":"project_not_found","message":"projeto não encontrado"}`)
+			return
+		}
+		io.WriteString(w, `{"project":"demo","secrets":[{"key":"DB_PASSWORD","value":"x"}]}`)
+	})
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	c, err := client.New(srv.URL)
 	if err != nil {
@@ -31,8 +44,8 @@ func TestHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Health: %v", err)
 	}
-	if h.Status != "ok" {
-		t.Errorf("Status = %q, quero \"ok\"", h.Status)
+	if h.Status != "ok" || h.Sealed {
+		t.Errorf("health = %+v, quero ok e aberto", h)
 	}
 }
 

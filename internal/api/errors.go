@@ -26,6 +26,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// maxBodyBytes limita o corpo das requisições, para que um cliente não
+// esgote a memória do servidor com um corpo enorme.
+const maxBodyBytes = 64 << 10 // 64 KiB
+
+// decodeJSON lê o corpo da requisição em v. O erro não é repassado ao
+// cliente nem ao log como está, porque pode citar trechos do corpo (que pode
+// conter a chave-mestra ou um segredo).
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
 // writeError responde com o formato de erro padrão da API.
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorBody{Error: code, Message: message})
