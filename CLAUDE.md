@@ -93,7 +93,7 @@ Um **gerenciador de segredos auto-hospedado** para equipes de desenvolvimento. O
 
 **Mecanismo central (o diferencial do TCC):** `envmem run --projeto X -- comando args` busca os segredos do projeto, monta o ambiente (`os.Environ()` mais os segredos), localiza o binário com `exec.LookPath` e chama **`syscall.Exec`**. O processo do CLI é substituído pela aplicação (mesmo PID), que recebe os segredos no `envp`. A aplicação não precisa de nenhum código especial: só lê variáveis de ambiente. Não sobra processo pai guardando os segredos.
 
-**Envelope encryption:** cada versão de segredo tem uma chave de dados (DEK) própria, de 32 bytes. O valor é cifrado com a DEK, e a DEK é cifrada **diretamente pela chave-mestra** (decisão 1), ambos em AES-256-GCM. No banco ficam: valor cifrado, nonce, DEK cifrada e nonce da DEK. A DEK em claro é zerada depois do uso. Uma chave intermediária entre a chave-mestra e as DEKs fica como evolução (facilita a rotação, TCC II).
+**Envelope encryption:** cada versão de segredo tem uma chave de dados (DEK) própria, de 32 bytes. O valor é cifrado com a DEK, e a DEK é cifrada **diretamente pela chave-mestra** (decisão 1), ambos em AES-256-GCM. No banco ficam: valor cifrado, nonce, DEK cifrada e nonce da DEK. A DEK em claro é zerada depois do uso. As duas cifragens usam **AAD** com o projeto e a chave do segredo (com prefixo de tamanho): uma linha movida pelo banco para outro projeto ou outra chave não decifra, o que reforça o RBAC contra adulteração direta no banco. Na Fatia 3, o AAD passa a usar o id do projeto. Uma chave intermediária entre a chave-mestra e as DEKs fica como evolução (facilita a rotação, TCC II).
 
 **Seal/unseal:** o servidor sobe **selado**. O unseal é feito pela rota **`POST /v1/unseal`, sem autenticação** (decisão 2): a própria chave-mestra é a credencial, como no HashiCorp Vault. A chave (32 bytes em base64) fica só em memória, protegida por `sync.RWMutex`. Para saber se a chave está certa, o servidor guarda um **valor de verificação** cifrado com a chave-mestra (tabela `vault_meta`, criado no primeiro unseal); no unseal, tenta decifrá-lo e recusa a chave se falhar. Selado, qualquer operação que precise decifrar devolve **503**. O seal por rota exige autenticação de superadmin (Fatia 4); até lá, selar = reiniciar o servidor.
 
@@ -173,7 +173,7 @@ docs/{arquitetura, decisoes, modelo-de-ameacas, modelo-de-dados}.md, docs/diagra
 
 ## Contrato da API (resumo)
 
-Prefixo `/v1`. Erros sempre em JSON: `{"error": "codigo", "message": "texto"}`. Status usados: 401, 403, 404, 409, 503.
+Prefixo `/v1`. Erros sempre em JSON: `{"error": "codigo", "message": "texto"}`. Status usados: 400 (corpo, chave ou nome inválido), 401, 403, 404, 409, 500 (erro interno ou segredo que não decifra), 503 (cofre selado).
 
 | Rota | Uso |
 |---|---|
@@ -204,7 +204,7 @@ Cada fatia entrega algo funcionando de ponta a ponta:
 5b. **Modo interativo** com huh
 6. **Meta (decisão 10):** credenciais dinâmicas para PostgreSQL
 
-**Estado atual (15/10/2026):** o ambiente WSL anterior foi perdido. **Recomeçar do zero** com o dev container: Docker Engine no WSL, repositório em `~/tcc/envmem` com os arquivos `.devcontainer/` e `docker-compose.yml`, módulo `github.com/heschaefer/envmem` e branch `main`.
+**Estado atual (15/10/2026):** Fatias 1 e 2 prontas, com push no GitHub. O roteiro da demonstração, com comandos e saída registrada, está em `docs/evidencias/roteiro-fatias-1-2.md`, e roda automaticamente em `TestEndToEnd` (`make test-integration`). Próximo: Fatia 3 (projetos + TLS).
 
 **Meta para 17/10 (apresentação ao orientador): Fatias 1 e 2.** Simplificações permitidas até lá: projeto como coluna de texto na tabela `secrets` (sem tabela `projects`), sem autenticação, seal só por reinício. Roteiro da demonstração:
 1. Servidor sobe selado: `/v1/health` mostra `sealed: true`, e `GET` de segredos devolve 503
@@ -218,7 +218,7 @@ Ordem sugerida: Fatia 1 completa (prova do PID); depois Docker + PostgreSQL + go
 
 ## Decisões
 
-**Já tomadas** (registrar cada uma em `docs/decisoes.md`, formato ADR curto: contexto, decisão, consequências): Go e PostgreSQL 18; `syscall.Exec` no `run`; envelope encryption com AES-256-GCM; chave-mestra cifra direto as DEKs (decisão 1); unseal por `POST /v1/unseal` sem autenticação, com valor de verificação (decisão 2); goose; SQL à mão com pgx; uuidv7; slog; configuração do servidor por variáveis de ambiente; TLS 1.3 com CA própria via openssl; argon2id; token opaco (decisão 3); token em arquivo com permissão 600 (decisão 4); papéis superadmin, admin, gestor e desenvolvedor, com cada ambiente como projeto separado; MFA para superadmin, admin e gestor, com reset por superadmin e sem códigos de recuperação; subcomandos diretos mais modo interativo com huh; prompt próprio do envmem no TCC II; shell supervisionado descartado; painel web fora do escopo; configuração do CLI em arquivo; auditoria em tabela append-only; testes de integração com build tag; chave-mestra gerada por `keygen` e nunca gravada; segredos na resposta da API como lista de objetos (`{"key", "value"}`, com espaço para `version`); rota ou método inexistente responde 404 em JSON (não 405); flag `--servidor` no CLI, mantida como sobrescrita quando existir o `config.json`; PID antes do exec só com `--verbose`; bloqueio de nomes de variáveis perigosos (`internal/envname`).
+**Já tomadas** (registrar cada uma em `docs/decisoes.md`, formato ADR curto: contexto, decisão, consequências): Go e PostgreSQL 18; `syscall.Exec` no `run`; envelope encryption com AES-256-GCM; chave-mestra cifra direto as DEKs (decisão 1); unseal por `POST /v1/unseal` sem autenticação, com valor de verificação (decisão 2); goose; SQL à mão com pgx; uuidv7; slog; configuração do servidor por variáveis de ambiente; TLS 1.3 com CA própria via openssl; argon2id; token opaco (decisão 3); token em arquivo com permissão 600 (decisão 4); papéis superadmin, admin, gestor e desenvolvedor, com cada ambiente como projeto separado; MFA para superadmin, admin e gestor, com reset por superadmin e sem códigos de recuperação; subcomandos diretos mais modo interativo com huh; prompt próprio do envmem no TCC II; shell supervisionado descartado; painel web fora do escopo; configuração do CLI em arquivo; auditoria em tabela append-only; testes de integração com build tag; chave-mestra gerada por `keygen` e nunca gravada; segredos na resposta da API como lista de objetos (`{"key", "value"}`, com espaço para `version`); rota ou método inexistente responde 404 em JSON (não 405); flag `--servidor` no CLI, mantida como sobrescrita quando existir o `config.json`; PID antes do exec só com `--verbose`; bloqueio de nomes de variáveis perigosos (`internal/envname`); AAD com projeto e chave no envelope; `DATABASE_URL` só por variável de ambiente (contém senha; flags aparecem no `ps`); unseal com chave errada responde 401 e com cofre já aberto, 409; segredo que não decifra falha o GET inteiro (500), sem entregar ambiente parcial; projeto sem segredos responde 404 até a Fatia 3.
 
 **Em aberto.** Discutir com o Henryque antes de implementar. Para cada uma, apresentar opções com prós e contras. Ele decide.
 
