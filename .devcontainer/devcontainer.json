@@ -1,0 +1,19 @@
+{
+  "name": "envmem",
+  "dockerComposeFile": ["../docker-compose.yml"],
+  "service": "dev",
+  "runServices": ["dev", "db"],
+  "workspaceFolder": "/workspaces/envmem",
+  "remoteUser": "dev",
+  "shutdownAction": "stopCompose",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"],
+      "settings": {
+        "go.toolsManagement.autoUpdate": true,
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "postCreateCommand": "go version && (test -f go.mod && go mod download || true)"
+}

@@ -1,0 +1,47 @@
+# Serviços de desenvolvimento do envmem.
+#   db:  PostgreSQL 18 do cofre
+#   dev: ambiente Go onde o código é editado, testado e executado
+#        (usado pelo VS Code como dev container)
+services:
+  db:
+    image: postgres:18
+    environment:
+      # Credenciais do banco LOCAL de desenvolvimento. É configuração do
+      # servidor, não segredo de projeto. Nunca usar estes valores fora daqui.
+      POSTGRES_USER: envmem
+      POSTGRES_PASSWORD: envmem_dev
+      POSTGRES_DB: envmem
+    volumes:
+      # Na imagem postgres:18 o volume é montado em /var/lib/postgresql
+      # (e não em /var/lib/postgresql/data, como nas versões antigas).
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U envmem -d envmem"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  dev:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    command: sleep infinity
+    volumes:
+      - .:/workspaces/envmem:cached
+      - gomod:/go/pkg/mod
+      - claude:/home/dev/.claude
+    environment:
+      DATABASE_URL: postgres://envmem:envmem_dev@db:5432/envmem?sslmode=disable
+      ENVMEM_LISTEN_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  gomod:
+  claude:
