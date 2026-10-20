@@ -17,6 +17,10 @@ type Server struct {
 	// DATABASE_URL, sem flag: ela contém a senha do banco, e argumentos de
 	// linha de comando ficam visíveis para outros usuários no "ps".
 	DatabaseURL string
+	// TLSCertFile e TLSKeyFile são o certificado do servidor e a chave
+	// privada dele, em PEM (gerados por scripts/gen-certs.sh).
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // LoadServer lê as variáveis de ambiente e aplica as flags de args por cima.
@@ -25,11 +29,15 @@ func LoadServer(args []string, stderr io.Writer) (Server, error) {
 	cfg := Server{
 		ListenAddr:  envOr("ENVMEM_LISTEN_ADDR", ":8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
+		TLSCertFile: envOr("ENVMEM_TLS_CERT", "certs/server.crt"),
+		TLSKeyFile:  envOr("ENVMEM_TLS_KEY", "certs/server.key"),
 	}
 
 	fs := flag.NewFlagSet("envmem-server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "endereço de escuta (ou ENVMEM_LISTEN_ADDR)")
+	fs.StringVar(&cfg.TLSCertFile, "tls-cert", cfg.TLSCertFile, "certificado TLS do servidor, em PEM (ou ENVMEM_TLS_CERT)")
+	fs.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "chave privada TLS do servidor, em PEM (ou ENVMEM_TLS_KEY)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
 	}

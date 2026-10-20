@@ -41,9 +41,17 @@ func main() {
 	}
 }
 
-// serve conecta ao banco, aplica as migrações, sobe o servidor HTTP e o
-// encerra de forma ordenada ao receber SIGINT (Ctrl+C) ou SIGTERM.
+// serve conecta ao banco, aplica as migrações, sobe o servidor HTTPS (só
+// TLS 1.3) e o encerra de forma ordenada ao receber SIGINT (Ctrl+C) ou
+// SIGTERM.
 func serve(logger *slog.Logger, cfg config.Server) error {
+	// O certificado é carregado antes do banco: com arquivo errado, o
+	// servidor nem chega a conectar.
+	tlsConfig, err := config.ServerTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+	if err != nil {
+		return err
+	}
+
 	startCtx, cancelStart := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelStart()
 
@@ -59,6 +67,9 @@ func serve(logger *slog.Logger, cfg config.Server) error {
 
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
+		// Não há porta HTTP sem TLS: a chave-mestra (unseal) e os segredos
+		// trafegam nesta conexão.
+		TLSConfig: tlsConfig,
 		// O cofre nasce selado: a chave-mestra só chega pelo POST /v1/unseal
 		// e fica só em memória. Reiniciar o servidor = selar.
 		Handler: api.NewRouter(logger, st, vault.New()),
@@ -68,18 +79,19 @@ func serve(logger *slog.Logger, cfg config.Server) error {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+		// Falhas de handshake (cliente sem TLS 1.3, certificado recusado)
+		// aparecem aqui como aviso.
+		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	// Certificado e chave já estão no TLSConfig, por isso os argumentos vazios.
+	go func() { errCh <- srv.ListenAndServeTLS("", "") }()
 
-	// TLS 1.3 entra na Fatia 3. Até lá, o tráfego vai em texto claro, então
-	// o servidor só deve rodar dentro do container de desenvolvimento.
-	logger.Info("envmem-server no ar", "addr", cfg.ListenAddr, "tls", false)
+	logger.Info("envmem-server no ar", "addr", cfg.ListenAddr, "tls", "1.3")
 
 	select {
 	case err := <-errCh:

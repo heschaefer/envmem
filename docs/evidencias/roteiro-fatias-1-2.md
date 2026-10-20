@@ -1,5 +1,7 @@
 # Roteiro da demonstração: Fatias 1 e 2
 
+> Registro da apresentação de 17/10/2026. Desde a Fatia 3, o servidor só aceita HTTPS (TLS 1.3) e os segredos precisam de um projeto criado antes: o roteiro atual está em `roteiro-fatia-3.md`.
+
 Tudo roda no terminal do dev container. São dois terminais: um para o servidor e outro para os comandos.
 
 ## Preparação

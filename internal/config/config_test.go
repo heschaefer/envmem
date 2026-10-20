@@ -44,3 +44,23 @@ func TestLoadServerRequiresDatabaseURL(t *testing.T) {
 		t.Fatal("esperava erro sem DATABASE_URL")
 	}
 }
+
+func TestLoadServerTLSFiles(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://teste")
+	t.Setenv("ENVMEM_TLS_CERT", "")
+	t.Setenv("ENVMEM_TLS_KEY", "/etc/envmem/server.key")
+
+	cfg, err := LoadServer([]string{"-tls-cert", "/tmp/s.crt"}, io.Discard)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.TLSCertFile != "/tmp/s.crt" || cfg.TLSKeyFile != "/etc/envmem/server.key" {
+		t.Errorf("TLS = %q, %q; quero a flag no cert e a variável na chave", cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+
+	t.Setenv("ENVMEM_TLS_KEY", "")
+	cfg, _ = LoadServer(nil, io.Discard)
+	if cfg.TLSCertFile != "certs/server.crt" || cfg.TLSKeyFile != "certs/server.key" {
+		t.Errorf("padrões = %q, %q", cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+}

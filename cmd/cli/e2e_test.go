@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,10 +50,22 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// startServer simula uma subida do envmem-server: cofre novo (selado),
-	// mesmo banco.
+	// mesmo banco, só TLS 1.3. hc é um cliente HTTP que confia no
+	// certificado do servidor, para os passos feitos "com curl".
+	var hc *http.Client
+	ca := filepath.Join(t.TempDir(), "ca.crt")
 	startServer := func() string {
-		srv := httptest.NewServer(api.NewRouter(slog.New(slog.DiscardHandler), st, vault.New()))
+		srv := httptest.NewUnstartedServer(api.NewRouter(slog.New(slog.DiscardHandler), st, vault.New()))
+		srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
+		srv.StartTLS()
 		t.Cleanup(srv.Close)
+		hc = srv.Client()
+		// O certificado de teste é autoassinado: ele mesmo faz o papel do
+		// ca.crt que o CLI recebe em --ca.
+		pemCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+		if err := os.WriteFile(ca, pemCert, 0o644); err != nil {
+			t.Fatal(err)
+		}
 		return srv.URL
 	}
 	key := vault.EncodeKey(vault.GenerateKey())
@@ -59,28 +74,28 @@ func TestEndToEnd(t *testing.T) {
 	// 1. Sobe selado: GET de segredos devolve 503.
 	url := startServer()
 	wantStatus(t, "GET selado", http.StatusServiceUnavailable,
-		request(t, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
+		request(t, hc, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
 
 	// 2. Unseal com a chave gerada.
 	wantStatus(t, "unseal", http.StatusOK,
-		request(t, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
+		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
 	// 3. Cria o projeto demo pelo CLI e grava o segredo DB_PASSWORD nele.
-	if _, stdout, _ := runEnvmem(t, "projects", "create", "--servidor", url, "demo"); stdout != "projeto demo criado\n" {
+	if _, stdout, _ := runEnvmem(t, "projects", "create", "--servidor", url, "--ca", ca, "demo"); stdout != "projeto demo criado\n" {
 		t.Errorf("projects create: stdout = %q", stdout)
 	}
-	if _, stdout, _ := runEnvmem(t, "projects", "list", "--servidor", url); stdout != "demo\n" {
+	if _, stdout, _ := runEnvmem(t, "projects", "list", "--servidor", url, "--ca", ca); stdout != "demo\n" {
 		t.Errorf("projects list: stdout = %q, quero %q", stdout, "demo\n")
 	}
 	wantStatus(t, "PUT", http.StatusCreated,
-		request(t, http.MethodPut, url+"/v1/projects/demo/secrets/DB_PASSWORD", `{"value":"`+value+`"}`))
+		request(t, hc, http.MethodPut, url+"/v1/projects/demo/secrets/DB_PASSWORD", `{"value":"`+value+`"}`))
 
 	// 4. No banco, o valor está ilegível.
 	assertNoPlaintextInDB(t, dbURL, value)
 
 	// 5. envmem run: o comando recebe a senha, no mesmo PID que o envmem
 	// imprimiu antes do exec.
-	pid, stdout, stderr := runEnvmem(t, "run", "--verbose", "--servidor", url, "--projeto", "demo",
+	pid, stdout, stderr := runEnvmem(t, "run", "--verbose", "--servidor", url, "--ca", ca, "--projeto", "demo",
 		"--", "sh", "-c", `echo "$$ $DB_PASSWORD"`)
 	if want := fmt.Sprintf("envmem: pid %d,", pid); !strings.HasPrefix(stderr, want) {
 		t.Errorf("stderr = %q, quero começar com %q", stderr, want)
@@ -92,12 +107,12 @@ func TestEndToEnd(t *testing.T) {
 	// 6. Reinício: volta selado; só a mesma chave abre, e o segredo continua lá.
 	url = startServer()
 	wantStatus(t, "GET depois do reinício", http.StatusServiceUnavailable,
-		request(t, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
+		request(t, hc, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
 	wantStatus(t, "unseal com outra chave", http.StatusUnauthorized,
-		request(t, http.MethodPost, url+"/v1/unseal", `{"key":"`+vault.EncodeKey(vault.GenerateKey())+`"}`))
+		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+vault.EncodeKey(vault.GenerateKey())+`"}`))
 	wantStatus(t, "unseal com a chave certa", http.StatusOK,
-		request(t, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
-	_, stdout, _ = runEnvmem(t, "run", "--servidor", url, "--projeto", "demo", "--", "sh", "-c", `echo "$DB_PASSWORD"`)
+		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
+	_, stdout, _ = runEnvmem(t, "run", "--servidor", url, "--ca", ca, "--projeto", "demo", "--", "sh", "-c", `echo "$DB_PASSWORD"`)
 	if stdout != value+"\n" {
 		t.Errorf("depois do reinício, stdout = %q, quero %q", stdout, value+"\n")
 	}
@@ -116,13 +131,13 @@ func runEnvmem(t *testing.T, args ...string) (pid int, stdout, stderr string) {
 	return cmd.Process.Pid, out.String(), errOut.String()
 }
 
-func request(t *testing.T, method, url, body string) *http.Response {
+func request(t *testing.T, hc *http.Client, method, url, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
