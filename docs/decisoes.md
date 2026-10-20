@@ -1,6 +1,6 @@
 # Registro de decisões de arquitetura
 
-Cada decisão segue o formato de ADR (Architecture Decision Record) curto: contexto, decisão e consequências. Os números 1 a 11 vêm das discussões iniciais do projeto; as decisões 5, 6, 7, 10 e 11 ainda estão em aberto. As demais começam no 12 e estão agrupadas por assunto.
+Cada decisão segue o formato de ADR (Architecture Decision Record) curto: contexto, decisão e consequências. Os números 1 a 11 vêm das discussões iniciais do projeto; as decisões 10 e 11 ainda estão em aberto. As demais começam no 12 e estão agrupadas por assunto.
 
 **Status possíveis:** aceita (implementada), aceita para fatia futura (decidida, ainda não implementada), substituída (trocada por outra decisão, indicada no texto), descartada e em aberto.
 
@@ -12,9 +12,9 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 2 | Unseal por rota sem autenticação, com valor de verificação | aceita (Fatia 2) |
 | 3 | Token de sessão opaco | aceita para a Fatia 4 |
 | 4 | Token do CLI em arquivo com permissão 600 | aceita para a Fatia 5 |
-| 5 | RBAC em middleware ou em cada handler | em aberto |
-| 6 | Acesso negado a projeto: 403 ou 404 | em aberto |
-| 7 | Eventos registrados na auditoria | em aberto |
+| 5 | RBAC com permissão declarada na rota | aceita para a Fatia 4 |
+| 6 | Acesso negado a projeto: 404 para quem não é membro, 403 para papel insuficiente | aceita para a Fatia 4 |
+| 7 | Auditoria de eventos de segurança, com falha fechada | aceita para a Fatia 4 |
 | 10 | Credenciais dinâmicas para PostgreSQL no TCC I | em aberto |
 | 11 | DELETE de segredo e retenção de versões | em aberto |
 | 12 | Go e PostgreSQL 18 | aceita |
@@ -350,7 +350,45 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 
 **Decisão:** os eventos ficam numa tabela do PostgreSQL. O usuário do banco usado pelo servidor tem apenas `INSERT` e `SELECT` nessa tabela. A auditoria registra chaves, nunca valores.
 
-**Consequências:** nem um servidor comprometido consegue apagar ou alterar eventos já registrados. Quais eventos registrar é a decisão 7, em aberto.
+**Consequências:** nem um servidor comprometido consegue apagar ou alterar eventos já registrados. Os eventos registrados estão na decisão 7.
+
+### 5. RBAC com permissão declarada na rota
+
+**Status:** aceita para a Fatia 4 (decidida em 20/10/2026)
+
+**Contexto:** a permissão pode ser conferida dentro de cada handler, com uma chamada explícita, ou na entrada da rota, num ponto central. Nas duas formas quem decide é o servidor; o CLI só leva o pedido. Com a checagem dentro do handler, uma rota nova em que a chamada for esquecida fica aberta.
+
+**Decisão:** modelo híbrido. Um middleware global exige token válido em todas as rotas, exceto as de uma lista explícita de rotas públicas (`GET /v1/health` e `POST /v1/unseal`). Cada rota é registrada junto com a permissão que exige, e um wrapper resolve o usuário, o projeto e o papel, confere a permissão numa matriz central (`internal/auth/rbac.go`, espelho da tabela de papéis) e deixa esses dados no contexto da requisição. O handler só faz checagem adicional quando a regra depende do corpo da requisição, como um gestor que pode adicionar desenvolvedor, mas não nomear gestor.
+
+**Consequências:** a falha é fechada: não há como registrar uma rota sem declarar a permissão. O arquivo de rotas passa a mostrar, rota por rota, quem pode o quê, e um único teste percorre a matriz de rotas e papéis. A busca do projeto pelo nome sai dos handlers e vai para o wrapper. A regra continua sendo por rota: o desenvolvedor pode usar a rota em lote do `run`, que devolve valores, mas não a de um valor isolado. Isso reduz a exposição, não a impede (decisão 13).
+
+### 6. Acesso negado a projeto: 404 para quem não é membro, 403 para papel insuficiente
+
+**Status:** aceita para a Fatia 4 (decidida em 20/10/2026)
+
+**Contexto:** responder sempre 403 revela que o projeto existe, e nomes de projeto podem ser informação sensível (por exemplo, o nome de um cliente). Responder sempre 404 confunde quem é membro do projeto e só não tem o papel exigido.
+
+**Decisão:** sem token válido, a resposta é 401, antes de qualquer consulta ao projeto. Um usuário autenticado que não é membro do projeto recebe 404, com a mesma mensagem de um projeto inexistente ("projeto não encontrado ou sem acesso"). Um membro com papel insuficiente para a ação recebe 403. Superadmin e admin têm acesso a todos os projetos.
+
+**Consequências:** quem não é membro não consegue descobrir quais projetos existem. Quem é membro já sabe que o projeto existe, então o 403 não revela nada e explica melhor o erro. Em todos os casos, a negação é registrada na auditoria (decisão 7): o usuário vê 404, mas a tentativa fica registrada.
+
+### 7. Auditoria de eventos de segurança, com falha fechada
+
+**Status:** aceita para a Fatia 4 (decidida em 20/10/2026)
+
+**Contexto:** registrar só segredos não responde quem deu acesso a quem; registrar toda requisição gera ruído e repete o log do `slog`. Também é preciso definir o que acontece quando o evento não pode ser gravado.
+
+**Decisão:** a auditoria registra os eventos de segurança:
+- leitura de valores, no `run` ou de um segredo isolado, com uma linha por segredo entregue e a versão entregue;
+- escrita e remoção de segredos;
+- mudanças de acesso: membros e papéis, criação e remoção de projetos e de usuários, reset de MFA;
+- login (com sucesso ou falha) e logout;
+- unseal (com sucesso ou falha) e seal;
+- negações do RBAC.
+
+Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falha). No unseal, que não tem autenticação, e no login com e-mail inexistente, o usuário fica nulo; o texto digitado no login não é guardado. Se o evento não puder ser gravado, a operação é negada (falha fechada), e nas escritas o evento entra na mesma transação da alteração.
+
+**Consequências:** a auditoria responde perguntas de incidente como "quem recebeu a versão 3 da `DB_PASSWORD` antes de ela vazar?". A tabela `audit_events` ganha as colunas `secret_version` e `remote_addr` em relação ao modelo inicial. Não guardar o texto digitado evita que uma senha digitada por engano no campo do e-mail vá parar na auditoria. A falha fechada tem custo baixo porque a auditoria fica no mesmo banco dos segredos: se o banco cair, os segredos já estariam indisponíveis. Se a auditoria um dia for para um serviço externo, essa escolha precisa ser revista. Um `run` de um projeto com muitos segredos gera muitas linhas, o que é o preço do detalhe por versão.
 
 ### 36. MFA para superadmin, admin e gestor
 
@@ -416,8 +454,5 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 
 Discutir antes de implementar a fatia correspondente.
 
-- **5. RBAC em middleware ou dentro de cada handler?** Necessária para a Fatia 4.
-- **6. Acesso negado a projeto: 403 ou 404?** O 404 não revela que o projeto existe; o 403 deixa o erro mais claro para quem usa. Necessária para a Fatia 4.
-- **7. Quais eventos a auditoria registra?** Necessária para a Fatia 4.
 - **10. A Fatia 6 (credenciais dinâmicas para PostgreSQL, com usuário temporário e `VALID UNTIL`) entra no TCC I?**
 - **11. O `DELETE` de segredo apaga de vez ou só marca como removido? As versões antigas são guardadas para sempre?** Enquanto não for decidida, a decisão 30 impede apagar projeto com segredos.
