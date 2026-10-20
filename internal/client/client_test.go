@@ -2,7 +2,9 @@ package client_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +30,28 @@ func newServer(t *testing.T) *client.Client {
 			return
 		}
 		io.WriteString(w, `{"project":"demo","secrets":[{"key":"DB_PASSWORD","value":"x"}]}`)
+	})
+	mux.HandleFunc("GET /v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"projects":[{"id":"1","name":"app-homo"},{"id":"2","name":"demo"}]}`)
+	})
+	mux.HandleFunc("POST /v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ Name string }
+		json.NewDecoder(r.Body).Decode(&in)
+		if in.Name == "demo" {
+			w.WriteHeader(http.StatusConflict)
+			io.WriteString(w, `{"error":"project_exists","message":"já existe um projeto com esse nome"}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"id":"3","name":%q}`, in.Name)
+	})
+	mux.HandleFunc("DELETE /v1/projects/{project}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("project") != "demo" {
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"error":"project_not_found","message":"projeto não encontrado"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -133,5 +157,34 @@ func TestNewRejectsInvalidURL(t *testing.T) {
 		if _, err := client.New(u); err == nil {
 			t.Errorf("New(%q): esperava erro", u)
 		}
+	}
+}
+
+func TestProjects(t *testing.T) {
+	c := newServer(t)
+	ctx := context.Background()
+
+	list, err := c.Projects(ctx)
+	if err != nil || len(list) != 2 || list[0].Name != "app-homo" {
+		t.Fatalf("Projects = %+v, %v", list, err)
+	}
+
+	p, err := c.CreateProject(ctx, "app-prod")
+	if err != nil || p.Name != "app-prod" || p.ID == "" {
+		t.Fatalf("CreateProject = %+v, %v", p, err)
+	}
+	var apiErr *client.APIError
+	if _, err := c.CreateProject(ctx, "demo"); !errors.As(err, &apiErr) || apiErr.Code != "project_exists" {
+		t.Fatalf("CreateProject repetido: %v, quero project_exists", err)
+	}
+
+	if err := c.DeleteProject(ctx, "demo"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if err := c.DeleteProject(ctx, "nao-existe"); !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+		t.Fatalf("DeleteProject inexistente: %v, quero 404", err)
+	}
+	if err := c.DeleteProject(ctx, ""); err == nil {
+		t.Fatal("esperava erro para projeto vazio")
 	}
 }

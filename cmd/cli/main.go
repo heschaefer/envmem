@@ -23,6 +23,8 @@ func run(args []string) int {
 	switch args[0] {
 	case "run":
 		return cmdRun(args[1:])
+	case "projects":
+		return cmdProjects(args[1:])
 	case "help", "-h", "-help", "--help":
 		usage(os.Stdout)
 		return 0
@@ -37,10 +39,12 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `Uso: envmem <subcomando> [opções]
 
 Subcomandos:
-  run    executa um comando com os segredos do projeto no ambiente
-  help   mostra esta ajuda
+  run        executa um comando com os segredos do projeto no ambiente
+  projects   lista, cria e remove projetos
+  help       mostra esta ajuda
 
-Exemplo:
+Exemplos:
+  envmem projects create demo
   envmem run --projeto demo -- sh -c 'echo $DB_PASSWORD'
 `)
 }
