@@ -8,20 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"time"
-
-	"github.com/heschaefer/envmem/internal/client"
 )
-
-// defaultServer é o endereço usado enquanto não existe o arquivo de
-// configuração gravado pelo "envmem login" (Fatia 5).
-const defaultServer = "http://localhost:8080"
 
 // cmdRun implementa "envmem run --projeto X -- comando args".
 // Se der certo, não retorna: o processo vira o comando (ver inject.go).
 func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	projeto := fs.String("projeto", "", "projeto cujos segredos serão injetados (obrigatório)")
-	servidor := fs.String("servidor", defaultServer, "endereço do envmem-server")
+	conn := addConnFlags(fs)
 	verbose := fs.Bool("verbose", false, "mostra o PID e o binário antes do exec")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Uso: envmem run --projeto X [--servidor URL] [--verbose] -- comando [args...]")
@@ -41,7 +35,7 @@ func cmdRun(args []string) int {
 		return 2
 	}
 
-	c, err := client.New(*servidor)
+	c, err := conn.client()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
 		return 2

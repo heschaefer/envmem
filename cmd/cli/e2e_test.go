@@ -65,9 +65,13 @@ func TestEndToEnd(t *testing.T) {
 	wantStatus(t, "unseal", http.StatusOK,
 		request(t, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
-	// 3. Cria o projeto demo e grava o segredo DB_PASSWORD nele.
-	wantStatus(t, "criar projeto", http.StatusCreated,
-		request(t, http.MethodPost, url+"/v1/projects", `{"name":"demo"}`))
+	// 3. Cria o projeto demo pelo CLI e grava o segredo DB_PASSWORD nele.
+	if _, stdout, _ := runEnvmem(t, "projects", "create", "--servidor", url, "demo"); stdout != "projeto demo criado\n" {
+		t.Errorf("projects create: stdout = %q", stdout)
+	}
+	if _, stdout, _ := runEnvmem(t, "projects", "list", "--servidor", url); stdout != "demo\n" {
+		t.Errorf("projects list: stdout = %q, quero %q", stdout, "demo\n")
+	}
 	wantStatus(t, "PUT", http.StatusCreated,
 		request(t, http.MethodPut, url+"/v1/projects/demo/secrets/DB_PASSWORD", `{"value":"`+value+`"}`))
 

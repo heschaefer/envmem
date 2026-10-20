@@ -3,6 +3,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,11 +69,29 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 // getJSON faz um GET em path e decodifica a resposta 200 em out. Qualquer
 // outro status vira *APIError.
 func (c *Client) getJSON(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	return c.doJSON(ctx, http.MethodGet, path, nil, http.StatusOK, out)
+}
+
+// doJSON envia uma requisição com in (se não for nil) como corpo JSON. Se o
+// status for want, decodifica a resposta em out (se não for nil); qualquer
+// outro status vira *APIError.
+func (c *Client) doJSON(ctx context.Context, method, path string, in any, want int, out any) error {
+	var reqBody io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		reqBody = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -81,8 +100,11 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	defer resp.Body.Close()
 	body := io.LimitReader(resp.Body, maxResponseBytes)
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != want {
 		return decodeAPIError(resp.StatusCode, body)
+	}
+	if out == nil {
+		return nil
 	}
 	// O erro do decodificador é descartado de propósito: a mensagem dele
 	// pode citar trechos do corpo, e o corpo pode conter segredos.
