@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -116,19 +117,63 @@ func TestEndToEnd(t *testing.T) {
 	if stdout != value+"\n" {
 		t.Errorf("depois do reinício, stdout = %q, quero %q", stdout, value+"\n")
 	}
+
+	// 7. DELETE pelo CLI: projeto com segredos é recusado (409) e continua
+	// inteiro; projeto vazio é removido; projeto inexistente dá 404.
+	// projects monta "projects AÇÃO --servidor URL --ca CA [NOME]": as
+	// flags vêm antes do nome.
+	projects := func(action string, name ...string) []string {
+		return append([]string{"projects", action, "--servidor", url, "--ca", ca}, name...)
+	}
+	_, _, stderr, code := execEnvmem(t, projects("delete", "demo")...)
+	if code != 1 || !strings.Contains(stderr, "409 (project_not_empty)") {
+		t.Errorf("delete demo: código %d, stderr %q; quero 1 e 409 project_not_empty", code, stderr)
+	}
+	_, stdout, _ = runEnvmem(t, "run", "--servidor", url, "--ca", ca, "--projeto", "demo", "--", "sh", "-c", `echo "$DB_PASSWORD"`)
+	if stdout != value+"\n" {
+		t.Errorf("depois do delete recusado, stdout = %q, quero o segredo intacto", stdout)
+	}
+
+	runEnvmem(t, projects("create", "vazio")...)
+	if _, stdout, _ := runEnvmem(t, projects("delete", "vazio")...); stdout != "projeto vazio removido\n" {
+		t.Errorf("delete vazio: stdout = %q", stdout)
+	}
+	if _, stdout, _ := runEnvmem(t, projects("list")...); stdout != "demo\n" {
+		t.Errorf("list depois dos deletes: stdout = %q, quero %q", stdout, "demo\n")
+	}
+
+	_, _, stderr, code = execEnvmem(t, projects("delete", "vazio")...)
+	if code != 1 || !strings.Contains(stderr, "404 (project_not_found)") {
+		t.Errorf("delete repetido: código %d, stderr %q; quero 1 e 404 project_not_found", code, stderr)
+	}
 }
 
-// runEnvmem roda o envmem (o próprio binário de teste) num processo filho.
+// runEnvmem roda o envmem (o próprio binário de teste) num processo filho e
+// falha o teste se ele sair com erro.
 func runEnvmem(t *testing.T, args ...string) (pid int, stdout, stderr string) {
+	t.Helper()
+	pid, stdout, stderr, code := execEnvmem(t, args...)
+	if code != 0 {
+		t.Fatalf("envmem %v: saiu com %d\nstderr: %s", args, code, stderr)
+	}
+	return pid, stdout, stderr
+}
+
+// execEnvmem roda o envmem num processo filho e devolve também o código de
+// saída, para os casos em que o erro é o resultado esperado.
+func execEnvmem(t *testing.T, args ...string) (pid int, stdout, stderr string, code int) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestEndToEnd$")
 	cmd.Env = append(os.Environ(), e2eEnv+"="+strings.Join(args, "\x1f"))
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("envmem %v: %v\nstderr: %s", args, err, errOut.String())
+	// Sair com código diferente de zero é um resultado; não conseguir nem
+	// iniciar o processo é falha do teste.
+	var exitErr *exec.ExitError
+	if err := cmd.Run(); err != nil && !errors.As(err, &exitErr) {
+		t.Fatalf("envmem %v: %v", args, err)
 	}
-	return cmd.Process.Pid, out.String(), errOut.String()
+	return cmd.Process.Pid, out.String(), errOut.String(), cmd.ProcessState.ExitCode()
 }
 
 func request(t *testing.T, hc *http.Client, method, url, body string) *http.Response {
