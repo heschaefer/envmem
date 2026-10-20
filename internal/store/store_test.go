@@ -64,12 +64,21 @@ func newTestStore(t *testing.T) *Store {
 
 func nonce() []byte { return bytes.Repeat([]byte{1}, 12) }
 
-func row(project, key, ciphertext string) SecretRow {
+func row(projectID, key, ciphertext string) SecretRow {
 	return SecretRow{
-		Project: project, Key: key,
+		ProjectID: projectID, Key: key,
 		Ciphertext: []byte(ciphertext), Nonce: nonce(),
 		WrappedDEK: []byte("dek"), DEKNonce: nonce(),
 	}
+}
+
+func createProject(t *testing.T, s *Store, name string) Project {
+	t.Helper()
+	p, err := s.CreateProject(context.Background(), name)
+	if err != nil {
+		t.Fatalf("CreateProject(%q): %v", name, err)
+	}
+	return p
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {
@@ -79,12 +88,75 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestSecretVersions(t *testing.T) {
+func TestProjects(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
+	homo := createProject(t, s, "app-homo")
+	createProject(t, s, "app-prod")
+	if homo.ID == "" {
+		t.Fatal("projeto criado sem id")
+	}
+	if _, err := s.CreateProject(ctx, "app-homo"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("nome repetido: %v, quero ErrConflict", err)
+	}
+
+	got, err := s.ProjectByName(ctx, "app-homo")
+	if err != nil || got.ID != homo.ID {
+		t.Fatalf("ProjectByName = %+v, %v; quero id %s", got, err, homo.ID)
+	}
+	if _, err := s.ProjectByName(ctx, "nao-existe"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ProjectByName inexistente: %v, quero ErrNotFound", err)
+	}
+
+	list, err := s.ListProjects(ctx)
+	if err != nil || len(list) != 2 || list[0].Name != "app-homo" || list[1].Name != "app-prod" {
+		t.Fatalf("ListProjects = %+v, %v", list, err)
+	}
+
+	if err := s.DeleteProject(ctx, "app-prod"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if err := s.DeleteProject(ctx, "app-prod"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteProject de novo: %v, quero ErrNotFound", err)
+	}
+}
+
+// O CHECK do banco recusa nomes fora do formato, mesmo que a API deixe
+// passar por engano.
+func TestProjectNameIsChecked(t *testing.T) {
+	s := newTestStore(t)
+	for _, name := range []string{"", "App", "-x", "a b", "a/b", strings.Repeat("a", 64)} {
+		if _, err := s.CreateProject(context.Background(), name); err == nil {
+			t.Errorf("CreateProject(%q): esperava erro", name)
+		}
+	}
+}
+
+func TestDeleteProjectWithSecrets(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	p := createProject(t, s, "demo")
+	if _, err := s.InsertSecretVersion(ctx, row(p.ID, "K", "c")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteProject(ctx, "demo"); !errors.Is(err, ErrProjectNotEmpty) {
+		t.Fatalf("DeleteProject: %v, quero ErrProjectNotEmpty", err)
+	}
+	if _, err := s.ProjectByName(ctx, "demo"); err != nil {
+		t.Fatalf("o projeto deveria continuar existindo: %v", err)
+	}
+}
+
+func TestSecretVersions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	demo := createProject(t, s, "demo")
+	outro := createProject(t, s, "outro")
+
 	for i, c := range []string{"v1", "v2", "v3"} {
-		v, err := s.InsertSecretVersion(ctx, row("demo", "DB_PASSWORD", c))
+		v, err := s.InsertSecretVersion(ctx, row(demo.ID, "DB_PASSWORD", c))
 		if err != nil {
 			t.Fatalf("Insert %s: %v", c, err)
 		}
@@ -92,14 +164,14 @@ func TestSecretVersions(t *testing.T) {
 			t.Errorf("versão = %d, quero %d", v, i+1)
 		}
 	}
-	if _, err := s.InsertSecretVersion(ctx, row("demo", "API_KEY", "a1")); err != nil {
+	if _, err := s.InsertSecretVersion(ctx, row(demo.ID, "API_KEY", "a1")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.InsertSecretVersion(ctx, row("outro", "DB_PASSWORD", "x1")); err != nil {
+	if _, err := s.InsertSecretVersion(ctx, row(outro.ID, "DB_PASSWORD", "x1")); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := s.LatestSecrets(ctx, "demo")
+	got, err := s.LatestSecrets(ctx, demo.ID)
 	if err != nil {
 		t.Fatalf("LatestSecrets: %v", err)
 	}
@@ -117,15 +189,30 @@ func TestSecretVersions(t *testing.T) {
 
 func TestLatestSecretsEmpty(t *testing.T) {
 	s := newTestStore(t)
-	got, err := s.LatestSecrets(context.Background(), "nao-existe")
+	p := createProject(t, s, "vazio")
+	got, err := s.LatestSecrets(context.Background(), p.ID)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("got %v, %v; quero lista vazia", got, err)
 	}
 }
 
+// Um segredo num projeto que não existe (por exemplo, apagado entre a
+// consulta e a gravação) é recusado pela chave estrangeira.
+func TestInsertSecretUnknownProject(t *testing.T) {
+	s := newTestStore(t)
+	p := createProject(t, s, "efemero")
+	if err := s.DeleteProject(context.Background(), "efemero"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertSecretVersion(context.Background(), row(p.ID, "K", "c")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Insert em projeto apagado: %v, quero ErrNotFound", err)
+	}
+}
+
 func TestNonceLengthIsChecked(t *testing.T) {
 	s := newTestStore(t)
-	r := row("demo", "K", "c")
+	p := createProject(t, s, "demo")
+	r := row(p.ID, "K", "c")
 	r.Nonce = []byte("curto")
 	if _, err := s.InsertSecretVersion(context.Background(), r); err == nil {
 		t.Fatal("esperava erro: nonce com tamanho diferente de 12")

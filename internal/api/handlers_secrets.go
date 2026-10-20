@@ -37,25 +37,23 @@ func (s *server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		writeSealed(w)
 		return
 	}
-	project := r.PathValue("project")
-
-	rows, err := s.store.LatestSecrets(r.Context(), project)
-	if err != nil {
-		s.logger.Error("listar segredos", "project", project, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+	project, ok := s.lookupProject(w, r)
+	if !ok {
 		return
 	}
-	// Até a Fatia 3 não há tabela de projetos: um projeto sem segredos é
-	// tratado como inexistente, para que um nome digitado errado no "run"
-	// não rode a aplicação sem nenhuma variável.
-	if len(rows) == 0 {
-		writeError(w, http.StatusNotFound, "project_not_found", "projeto não encontrado")
+
+	rows, err := s.store.LatestSecrets(r.Context(), project.ID)
+	if err != nil {
+		s.logger.Error("listar segredos", "project", project.Name, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
 		return
 	}
 
 	items := make([]secretItem, 0, len(rows))
 	for _, row := range rows {
-		plaintext, err := s.vault.DecryptSecret(project, row.Key, envelopeOf(row))
+		// O AAD usa o id do projeto: uma linha movida de outro projeto no
+		// banco não decifra aqui.
+		plaintext, err := s.vault.DecryptSecret(project.ID, row.Key, envelopeOf(row))
 		if errors.Is(err, vault.ErrSealed) {
 			writeSealed(w)
 			return
@@ -65,20 +63,20 @@ func (s *server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 			// movida de outro projeto (AAD). Falha a requisição inteira: um
 			// ambiente pela metade esconderia o problema.
 			s.logger.Error("segredo não decifra: possível adulteração no banco",
-				"project", project, "key", row.Key, "version", row.Version)
+				"project", project.Name, "key", row.Key, "version", row.Version)
 			writeError(w, http.StatusInternalServerError, "decrypt_failed", "não foi possível decifrar os segredos do projeto")
 			return
 		}
 		items = append(items, secretItem{Key: row.Key, Value: string(plaintext)})
 		clear(plaintext)
 	}
-	writeJSON(w, http.StatusOK, listSecretsResponse{Project: project, Secrets: items})
+	writeJSON(w, http.StatusOK, listSecretsResponse{Project: project.Name, Secrets: items})
 }
 
 // handlePutSecret grava uma nova versão do segredo, com o valor no corpo
 // ({"value": "..."}). Nunca no caminho nem na query: iriam para logs.
 func (s *server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
-	project, key := r.PathValue("project"), r.PathValue("key")
+	key := r.PathValue("key")
 
 	if err := envname.Check(key); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_key_name", err.Error())
@@ -99,22 +97,28 @@ func (s *server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_value", "o valor não pode conter byte nulo")
 		return
 	}
+	// O projeto precisa existir: o PUT não cria projeto implicitamente, para
+	// que um nome digitado errado não gere um projeto novo.
+	project, ok := s.lookupProject(w, r)
+	if !ok {
+		return
+	}
 
 	value := []byte(req.Value)
-	env, err := s.vault.EncryptSecret(project, key, value)
+	env, err := s.vault.EncryptSecret(project.ID, key, value)
 	clear(value)
 	if errors.Is(err, vault.ErrSealed) {
 		writeSealed(w)
 		return
 	}
 	if err != nil {
-		s.logger.Error("cifrar segredo", "project", project, "key", key, "err", err)
+		s.logger.Error("cifrar segredo", "project", project.Name, "key", key, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
 		return
 	}
 
 	version, err := s.store.InsertSecretVersion(r.Context(), store.SecretRow{
-		Project:    project,
+		ProjectID:  project.ID,
 		Key:        key,
 		Ciphertext: env.Ciphertext,
 		Nonce:      env.Nonce,
@@ -125,14 +129,18 @@ func (s *server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "outra gravação deste segredo aconteceu ao mesmo tempo; tente de novo")
 		return
 	}
+	if errors.Is(err, store.ErrNotFound) { // projeto apagado durante o PUT
+		writeProjectNotFound(w)
+		return
+	}
 	if err != nil {
-		s.logger.Error("gravar segredo", "project", project, "key", key, "err", err)
+		s.logger.Error("gravar segredo", "project", project.Name, "key", key, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
 		return
 	}
 
-	s.logger.Info("segredo gravado", "project", project, "key", key, "version", version)
-	writeJSON(w, http.StatusCreated, putSecretResponse{Project: project, Key: key, Version: version})
+	s.logger.Info("segredo gravado", "project", project.Name, "key", key, "version", version)
+	writeJSON(w, http.StatusCreated, putSecretResponse{Project: project.Name, Key: key, Version: version})
 }
 
 func envelopeOf(row store.SecretRow) vault.Envelope {
