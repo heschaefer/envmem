@@ -1,8 +1,9 @@
 # binários
 /bin/
 
-# configuração local e certificados gerados
+# configuração local e certificados gerados (scripts/gen-certs.sh)
 .env
+/certs/
 *.pem
 *.key
 *.crt
