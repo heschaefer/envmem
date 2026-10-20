@@ -16,7 +16,11 @@ import (
 type Store interface {
 	GetVaultMeta(ctx context.Context) (store.VaultMeta, error)
 	InsertVaultMeta(ctx context.Context, m store.VaultMeta) (bool, error)
-	LatestSecrets(ctx context.Context, project string) ([]store.SecretRow, error)
+	CreateProject(ctx context.Context, name string) (store.Project, error)
+	ProjectByName(ctx context.Context, name string) (store.Project, error)
+	ListProjects(ctx context.Context) ([]store.Project, error)
+	DeleteProject(ctx context.Context, name string) error
+	LatestSecrets(ctx context.Context, projectID string) ([]store.SecretRow, error)
 	InsertSecretVersion(ctx context.Context, row store.SecretRow) (int, error)
 }
 
@@ -34,6 +38,9 @@ func NewRouter(logger *slog.Logger, st Store, v *vault.Vault) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST /v1/unseal", s.handleUnseal)
+	mux.HandleFunc("GET /v1/projects", s.handleListProjects)
+	mux.HandleFunc("POST /v1/projects", s.handleCreateProject)
+	mux.HandleFunc("DELETE /v1/projects/{project}", s.handleDeleteProject)
 	mux.HandleFunc("GET /v1/projects/{project}/secrets", s.handleListSecrets)
 	mux.HandleFunc("PUT /v1/projects/{project}/secrets/{key}", s.handlePutSecret)
 

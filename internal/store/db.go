@@ -37,6 +37,22 @@ func (s *Store) Close() {
 
 // isUniqueViolation diz se err é violação de UNIQUE (código 23505).
 func isUniqueViolation(err error) bool {
+	return hasCode(err, "23505")
+}
+
+// isForeignKeyViolation diz se err é violação de chave estrangeira (código
+// 23503), como gravar um segredo num projeto que acabou de ser apagado.
+func isForeignKeyViolation(err error) bool {
+	return hasCode(err, "23503")
+}
+
+// isRestrictViolation diz se err é recusa de um ON DELETE RESTRICT (código
+// 23001), como apagar um projeto que ainda tem segredos.
+func isRestrictViolation(err error) bool {
+	return hasCode(err, "23001")
+}
+
+func hasCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	return errors.As(err, &pgErr) && pgErr.Code == code
 }

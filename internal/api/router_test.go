@@ -45,6 +45,16 @@ func (e *testEnv) unseal(t *testing.T, key string) *httptest.ResponseRecorder {
 	return e.do(t, http.MethodPost, "/v1/unseal", `{"key":"`+key+`"}`)
 }
 
+// createProject cria um projeto pela API e devolve o que ela respondeu.
+func (e *testEnv) createProject(t *testing.T, name string) projectItem {
+	t.Helper()
+	rec := e.do(t, http.MethodPost, "/v1/projects", `{"name":"`+name+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("criar projeto %q: %d %s", name, rec.Code, rec.Body.String())
+	}
+	return decode[projectItem](t, rec)
+}
+
 func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 	t.Helper()
 	var v T

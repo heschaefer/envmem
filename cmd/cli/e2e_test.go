@@ -65,7 +65,9 @@ func TestEndToEnd(t *testing.T) {
 	wantStatus(t, "unseal", http.StatusOK,
 		request(t, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
-	// 3. PUT do segredo DB_PASSWORD no projeto demo.
+	// 3. Cria o projeto demo e grava o segredo DB_PASSWORD nele.
+	wantStatus(t, "criar projeto", http.StatusCreated,
+		request(t, http.MethodPost, url+"/v1/projects", `{"name":"demo"}`))
 	wantStatus(t, "PUT", http.StatusCreated,
 		request(t, http.MethodPut, url+"/v1/projects/demo/secrets/DB_PASSWORD", `{"value":"`+value+`"}`))
 
@@ -142,7 +144,9 @@ func assertNoPlaintextInDB(t *testing.T, dbURL, value string) {
 
 	var ciphertext, wrappedDEK []byte
 	err = conn.QueryRow(context.Background(),
-		`SELECT ciphertext, wrapped_dek FROM secrets WHERE project = $1 AND key = $2`,
+		`SELECT s.ciphertext, s.wrapped_dek
+		 FROM secrets s JOIN projects p ON p.id = s.project_id
+		 WHERE p.name = $1 AND s.key = $2`,
 		"demo", "DB_PASSWORD").Scan(&ciphertext, &wrappedDEK)
 	if err != nil {
 		t.Fatal(err)

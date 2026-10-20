@@ -11,11 +11,21 @@ var (
 	// ErrConflict indica que outra gravação ocupou a mesma posição (por
 	// exemplo, duas versões novas do mesmo segredo ao mesmo tempo).
 	ErrConflict = errors.New("store: conflito de gravação")
+	// ErrProjectNotEmpty indica uma tentativa de apagar um projeto que
+	// ainda tem segredos.
+	ErrProjectNotEmpty = errors.New("store: projeto tem segredos")
 )
+
+// Project é um projeto. Cada ambiente (app-prod, app-homo) é um projeto.
+type Project struct {
+	ID        string // uuid; é o que entra no AAD dos segredos
+	Name      string // nome usado nas rotas e no CLI
+	CreatedAt time.Time
+}
 
 // SecretRow é uma versão de segredo como está no banco: só material cifrado.
 type SecretRow struct {
-	Project    string
+	ProjectID  string
 	Key        string
 	Version    int
 	Ciphertext []byte // valor cifrado com a DEK

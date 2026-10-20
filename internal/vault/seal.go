@@ -83,23 +83,24 @@ func (v *Vault) Seal() {
 	v.masterKey = nil
 }
 
-// EncryptSecret cifra o valor de um segredo, amarrado ao projeto e à chave.
-func (v *Vault) EncryptSecret(project, key string, value []byte) (Envelope, error) {
+// EncryptSecret cifra o valor de um segredo, amarrado ao projeto (pelo id)
+// e à chave.
+func (v *Vault) EncryptSecret(projectID, key string, value []byte) (Envelope, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if v.masterKey == nil {
 		return Envelope{}, ErrSealed
 	}
-	return encrypt(v.masterKey, value, secretAAD(project, key))
+	return encrypt(v.masterKey, value, secretAAD(projectID, key))
 }
 
 // DecryptSecret decifra o valor de um segredo. Falha se o envelope não for
 // deste projeto e desta chave. Quem chama deve zerar o resultado.
-func (v *Vault) DecryptSecret(project, key string, env Envelope) ([]byte, error) {
+func (v *Vault) DecryptSecret(projectID, key string, env Envelope) ([]byte, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if v.masterKey == nil {
 		return nil, ErrSealed
 	}
-	return decrypt(v.masterKey, env, secretAAD(project, key))
+	return decrypt(v.masterKey, env, secretAAD(projectID, key))
 }

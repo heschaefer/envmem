@@ -103,13 +103,17 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// secretAAD monta o contexto de um segredo: o rótulo, o projeto e a chave,
-// cada um precedido do seu tamanho. O tamanho evita ambiguidade: sem ele,
-// ("ab", "c") e ("a", "bc") gerariam os mesmos bytes.
-func secretAAD(project, key string) []byte {
-	b := []byte("envmem/secret/v1")
-	b = binary.AppendUvarint(b, uint64(len(project)))
-	b = append(b, project...)
+// secretAAD monta o contexto de um segredo: o rótulo, o id do projeto e a
+// chave, cada um precedido do seu tamanho. O tamanho evita ambiguidade: sem
+// ele, ("ab", "c") e ("a", "bc") gerariam os mesmos bytes.
+//
+// O id (e não o nome) amarra o segredo ao projeto: um projeto apagado e
+// recriado com o mesmo nome ganha outro id, e as linhas antigas não abrem
+// nele. O "v2" no rótulo marca a troca do nome pelo id (Fatia 3).
+func secretAAD(projectID, key string) []byte {
+	b := []byte("envmem/secret/v2")
+	b = binary.AppendUvarint(b, uint64(len(projectID)))
+	b = append(b, projectID...)
 	b = binary.AppendUvarint(b, uint64(len(key)))
 	b = append(b, key...)
 	return b

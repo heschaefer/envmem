@@ -12,13 +12,15 @@ import (
 
 const secretPath = "/v1/projects/demo/secrets"
 
-// openEnv devolve um ambiente de teste com o cofre já aberto.
+// openEnv devolve um ambiente de teste com o cofre já aberto e o projeto
+// demo criado.
 func openEnv(t *testing.T) *testEnv {
 	t.Helper()
 	e := newTestEnv(t)
 	if rec := e.unseal(t, vault.EncodeKey(vault.GenerateKey())); rec.Code != http.StatusOK {
 		t.Fatalf("unseal: %d", rec.Code)
 	}
+	e.createProject(t, "demo")
 	return e
 }
 
@@ -29,6 +31,7 @@ func (e *testEnv) put(t *testing.T, project, key, value string) *httptest.Respon
 
 func TestSealedReturns503(t *testing.T) {
 	e := newTestEnv(t)
+	e.createProject(t, "demo")
 	wantError(t, e.do(t, http.MethodGet, secretPath, ""), http.StatusServiceUnavailable, "sealed")
 	wantError(t, e.put(t, "demo", "DB_PASSWORD", "x"), http.StatusServiceUnavailable, "sealed")
 }
@@ -75,9 +78,27 @@ func TestStoreNeverSeesPlaintext(t *testing.T) {
 	}
 }
 
-func TestListUnknownProject(t *testing.T) {
+func TestUnknownProject(t *testing.T) {
 	e := openEnv(t)
 	wantError(t, e.do(t, http.MethodGet, "/v1/projects/nao-existe/secrets", ""), http.StatusNotFound, "project_not_found")
+	// O PUT não cria o projeto: um nome digitado errado não vira projeto novo.
+	wantError(t, e.put(t, "nao-existe", "K", "x"), http.StatusNotFound, "project_not_found")
+	if len(e.store.projects) != 1 {
+		t.Fatal("o PUT não deveria ter criado projeto")
+	}
+}
+
+// Desde a Fatia 3, projeto existente sem segredos responde 200 com lista
+// vazia (antes, sem tabela de projetos, respondia 404).
+func TestListEmptyProject(t *testing.T) {
+	e := openEnv(t)
+	rec := e.do(t, http.MethodGet, secretPath, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET: %d %s", rec.Code, rec.Body.String())
+	}
+	if body := decode[listSecretsResponse](t, rec); body.Secrets == nil || len(body.Secrets) != 0 {
+		t.Fatalf("segredos = %#v, quero lista vazia (não null)", body.Secrets)
+	}
 }
 
 func TestPutRejects(t *testing.T) {
@@ -95,12 +116,14 @@ func TestPutRejects(t *testing.T) {
 // requisição falha inteira, e o log cita a chave, mas não o valor.
 func TestMovedRowFailsClosed(t *testing.T) {
 	e := openEnv(t)
+	e.createProject(t, "app-prod")
+	dev := e.createProject(t, "dev")
 	e.put(t, "app-prod", "DB_PASSWORD", "senha-de-producao")
 	e.put(t, "dev", "OUTRA", "x")
 
 	// "Ataque" direto no banco: copia a linha de produção para o projeto dev.
 	moved := e.store.secrets[0]
-	moved.Project = "dev"
+	moved.ProjectID = dev.ID
 	e.store.secrets = append(e.store.secrets, moved)
 
 	rec := e.do(t, http.MethodGet, "/v1/projects/dev/secrets", "")
