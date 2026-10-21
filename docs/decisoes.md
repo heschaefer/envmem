@@ -24,7 +24,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 16 | Chave-mestra gerada por `keygen` e nunca gravada | aceita (Fatia 2) |
 | 17 | Respostas do unseal: 401 e 409 | aceita (Fatia 2) |
 | 18 | Segredo que não decifra falha a requisição inteira | aceita (Fatia 2) |
-| 19 | Acesso ao banco: pgx, SQL à mão, goose e uuidv7 | aceita (Fatia 2) |
+| 19 | Acesso ao banco: pgx, SQL à mão, goose e uuidv7 | aceita (Fatia 2); migração na subida substituída pela 42 |
 | 20 | Configuração do servidor por variáveis de ambiente | aceita |
 | 21 | Logs estruturados com slog, sem dados sensíveis | aceita |
 | 22 | Formato da API: segredos como lista de objetos e 404 em JSON | aceita (Fatias 1 e 2) |
@@ -47,6 +47,10 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 39 | Prompt próprio do envmem no TCC II | aceita para o TCC II |
 | 40 | Shell supervisionado | descartada |
 | 41 | Painel web | descartada (fora do escopo) |
+| 42 | Usuário de banco restrito e migração em etapa separada | aceita para a Fatia 4 |
+| 43 | Primeira senha: temporária, com troca obrigatória | aceita para a Fatia 4 |
+| 44 | Projeto nasce sem gestor | aceita para a Fatia 4 |
+| 45 | Limite de tentativas de login em memória | aceita para a Fatia 4 |
 
 ---
 
@@ -168,7 +172,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 
 ### 19. Acesso ao banco: pgx, SQL à mão, goose e uuidv7
 
-**Status:** aceita (Fatia 2)
+**Status:** aceita (Fatia 2). A aplicação das migrações na subida do servidor foi substituída pela decisão 42 (Fatia 4).
 
 **Contexto:** o acesso ao banco precisa ser fácil de auditar linha por linha, porque é onde moram os dados cifrados.
 
@@ -350,7 +354,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 
 **Decisão:** os eventos ficam numa tabela do PostgreSQL. O usuário do banco usado pelo servidor tem apenas `INSERT` e `SELECT` nessa tabela. A auditoria registra chaves, nunca valores.
 
-**Consequências:** nem um servidor comprometido consegue apagar ou alterar eventos já registrados. Os eventos registrados estão na decisão 7.
+**Consequências:** nem um servidor comprometido consegue apagar ou alterar eventos já registrados. Essa garantia depende de o servidor não ser dono das tabelas, porque o dono de uma tabela pode devolver a si mesmo qualquer privilégio retirado (decisão 42). Os eventos registrados estão na decisão 7.
 
 ### 5. RBAC com permissão declarada na rota
 
@@ -389,6 +393,46 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falha). No unseal, que não tem autenticação, e no login com e-mail inexistente, o usuário fica nulo; o texto digitado no login não é guardado. Se o evento não puder ser gravado, a operação é negada (falha fechada), e nas escritas o evento entra na mesma transação da alteração.
 
 **Consequências:** a auditoria responde perguntas de incidente como "quem recebeu a versão 3 da `DB_PASSWORD` antes de ela vazar?". A tabela `audit_events` ganha as colunas `secret_version` e `remote_addr` em relação ao modelo inicial. Não guardar o texto digitado evita que uma senha digitada por engano no campo do e-mail vá parar na auditoria. A falha fechada tem custo baixo porque a auditoria fica no mesmo banco dos segredos: se o banco cair, os segredos já estariam indisponíveis. Se a auditoria um dia for para um serviço externo, essa escolha precisa ser revista. Um `run` de um projeto com muitos segredos gera muitas linhas, o que é o preço do detalhe por versão.
+
+### 42. Usuário de banco restrito e migração em etapa separada
+
+**Status:** aceita para a Fatia 4 (decidida em 21/10/2026); substitui a aplicação das migrações na subida (decisão 19)
+
+**Contexto:** rodar migrações exige privilégios fortes (criar, alterar e apagar tabelas), e quem cria uma tabela vira dono dela. O dono pode devolver a si mesmo qualquer privilégio retirado, então a regra da decisão 35 (servidor só com `INSERT` e `SELECT` na auditoria) não vale se o servidor for dono. Até a Fatia 3, o servidor migrava na subida e, por isso, conectava como dono o tempo todo. Foram avaliadas três opções: um único usuário com trigger que bloqueia `UPDATE` e `DELETE` na auditoria (o dono pode apagar o trigger), dois usuários com migração na subida (a senha do dono fica no ambiente do processo durante toda a vida do servidor) e a migração em etapa separada.
+
+**Decisão:** dois usuários de banco. O dono das tabelas é usado só pelo subcomando `envmem-server migrate`, rodado por quem opera e apenas quando uma versão nova do envmem traz migração. O servidor sobe com um usuário restrito, que tem nas tabelas comuns só os privilégios de leitura e escrita de linhas e, na auditoria, só `INSERT` e `SELECT`. Na subida, o servidor confere a tabela de controle do goose e se recusa a subir se houver migração pendente, com uma mensagem que manda rodar `envmem-server migrate`. Os usuários de banco são criados fora das migrações (script de inicialização do PostgreSQL no ambiente de desenvolvimento), porque migração não deve conter senha.
+
+**Consequências:** o servidor que fica no ar nunca tem a credencial do dono; ela aparece só por alguns segundos, nas atualizações. Mesmo um servidor comprometido não consegue apagar nem alterar eventos de auditoria. Atualizar o envmem passa a ter um passo a mais (`migrate` antes de subir o servidor), e esquecê-lo impede a subida, em vez de deixar o servidor rodar com estrutura velha. No ambiente de desenvolvimento, o volume do banco precisa ser recriado para o script de inicialização rodar. Os testes de integração continuam migrando sozinhos, cada um no seu schema temporário.
+
+### 43. Primeira senha: temporária, com troca obrigatória
+
+**Status:** aceita para a Fatia 4 (decidida em 21/10/2026)
+
+**Contexto:** quando o superadmin cria um usuário, a pessoa precisa de um jeito de entrar pela primeira vez. Foram avaliados a senha temporária com troca obrigatória, um convite de uso único (código aleatório que só serve para definir a senha) e a senha definitiva escolhida pelo superadmin.
+
+**Decisão:** o superadmin cria o usuário com uma senha temporária, e o usuário é obrigado a trocá-la no primeiro login. Até trocar, a sessão não permite nenhuma outra ação.
+
+**Consequências:** é o fluxo mais simples de implementar e de explicar. A senha temporária é entregue à pessoa por algum canal, como uma mensagem, e dá acesso enquanto não for trocada; por isso a troca obrigatória precisa ser conferida no servidor. Ficam para a implementação: quem gera a senha temporária (o superadmin ou o servidor, com `crypto/rand`) e se ela vence depois de um prazo.
+
+### 44. Projeto nasce sem gestor
+
+**Status:** aceita para a Fatia 4 (decidida em 21/10/2026)
+
+**Contexto:** só admin e superadmin criam projetos, e os dois já acessam todos os projetos pelo papel global. Tornar quem cria o projeto gestor dele criaria uma participação redundante, que sobraria se a pessoa deixasse de ser admin.
+
+**Decisão:** o projeto é criado sem membros. O gestor é nomeado depois, por admin ou superadmin, pela rota de membros.
+
+**Consequências:** segue a tabela de papéis ("nomear gestores: admin e superadmin") e não deixa acessos esquecidos. Criar um projeto e nomear o gestor são dois passos. Aceitar o gestor inicial no próprio `POST /projects` fica como conveniência possível no futuro.
+
+### 45. Limite de tentativas de login em memória
+
+**Status:** aceita para a Fatia 4 (decidida em 21/10/2026)
+
+**Contexto:** o argon2id deixa cada tentativa de senha lenta, mas não limita quantas tentativas são feitas. Cada tentativa também aloca 19 MiB, então muitas tentativas simultâneas esgotariam a memória do servidor. Bloquear a conta depois de algumas falhas permitiria que qualquer pessoa bloqueasse a conta dos outros de propósito.
+
+**Decisão:** o servidor limita as tentativas de login em memória, por conta e por IP de origem. Acima do limite, responde 429 com `Retry-After`, sem bloquear a conta. Os valores exatos do limite ficam para a implementação.
+
+**Consequências:** a adivinhação de senhas fica lenta e a memória do servidor fica protegida, sem que um atacante consiga deixar a conta de alguém indisponível por tempo indeterminado. Os contadores zeram quando o servidor reinicia, e o limite por IP perde força quando muitos usuários saem pelo mesmo endereço. As falhas continuam registradas na auditoria (decisão 7).
 
 ### 36. MFA para superadmin, admin e gestor
 
