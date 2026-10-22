@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/heschaefer/envmem/internal/api"
+	"github.com/heschaefer/envmem/internal/auth"
 	"github.com/heschaefer/envmem/internal/store"
 	"github.com/heschaefer/envmem/internal/vault"
 )
@@ -60,17 +61,30 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("o roteador deveria rodar com o usuário restrito: %v", err)
 	}
 
+	// Primeiro superadmin, como o "envmem-server create-superadmin" faria.
+	const email, password = "admin@empresa.com", "senha do superadmin de teste"
+	if _, err := st.CreateFirstSuperadmin(ctx, email, auth.HashPassword([]byte(password))); err != nil {
+		t.Fatal(err)
+	}
+	// O ~/.config dos processos do CLI fica numa pasta temporária. A
+	// variável ENVMEM_SEGREDO_TESTE serve para conferir que o run não passa
+	// variáveis ENVMEM_* para a aplicação.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ENVMEM_SEGREDO_TESTE", "nao-pode-chegar-na-aplicacao")
+
 	// startServer simula uma subida do envmem-server: cofre novo (selado),
 	// mesmo banco, só TLS 1.3. hc é um cliente HTTP que confia no
-	// certificado do servidor, para os passos feitos "com curl".
+	// certificado do servidor e envia o token de sessão, para os passos
+	// feitos "com curl".
 	var hc *http.Client
+	var token string
 	ca := filepath.Join(t.TempDir(), "ca.crt")
 	startServer := func() string {
 		srv := httptest.NewUnstartedServer(api.NewRouter(slog.New(slog.DiscardHandler), st, vault.New()))
 		srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
 		srv.StartTLS()
 		t.Cleanup(srv.Close)
-		hc = srv.Client()
+		hc = &http.Client{Transport: bearerTransport{base: srv.Client().Transport, token: &token}}
 		// O certificado de teste é autoassinado: ele mesmo faz o papel do
 		// ca.crt que o CLI recebe em --ca.
 		pemCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
@@ -82,8 +96,20 @@ func TestEndToEnd(t *testing.T) {
 	key := vault.EncodeKey(vault.GenerateKey())
 	const value = "S3nh@-de-ponta-a-ponta"
 
-	// 1. Sobe selado: GET de segredos devolve 503.
+	// 0. Sem sessão, nada além das rotas públicas. O envmem login grava o
+	// token em ~/.config/envmem/token, que os próximos comandos usam.
 	url := startServer()
+	wantStatus(t, "GET sem sessão", http.StatusUnauthorized,
+		request(t, hc, http.MethodGet, url+"/v1/projects", ""))
+	if _, _, stderr, code := execEnvmemIn(t, "senha errada mas longa\n", "login", "--servidor", url, "--ca", ca, "--senha-stdin", email); code != 1 || !strings.Contains(stderr, "invalid_credentials") {
+		t.Errorf("login com senha errada: código %d, stderr %q", code, stderr)
+	}
+	runEnvmemIn(t, password+"\n", "login", "--servidor", url, "--ca", ca, "--senha-stdin", email)
+	if token, err = loadToken(); err != nil {
+		t.Fatalf("o login deveria ter gravado o token: %v", err)
+	}
+
+	// 1. Sobe selado: GET de segredos devolve 503.
 	wantStatus(t, "GET selado", http.StatusServiceUnavailable,
 		request(t, hc, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
 
@@ -105,13 +131,13 @@ func TestEndToEnd(t *testing.T) {
 	assertNoPlaintextInDB(t, dbURL, value)
 
 	// 5. envmem run: o comando recebe a senha, no mesmo PID que o envmem
-	// imprimiu antes do exec.
+	// imprimiu antes do exec, e não recebe as variáveis ENVMEM_*.
 	pid, stdout, stderr := runEnvmem(t, "run", "--verbose", "--servidor", url, "--ca", ca, "--projeto", "demo",
-		"--", "sh", "-c", `echo "$$ $DB_PASSWORD"`)
+		"--", "sh", "-c", `echo "$$ $DB_PASSWORD [$ENVMEM_SEGREDO_TESTE]"`)
 	if want := fmt.Sprintf("envmem: pid %d,", pid); !strings.HasPrefix(stderr, want) {
 		t.Errorf("stderr = %q, quero começar com %q", stderr, want)
 	}
-	if want := fmt.Sprintf("%d %s\n", pid, value); stdout != want {
+	if want := fmt.Sprintf("%d %s []\n", pid, value); stdout != want {
 		t.Errorf("stdout = %q, quero %q", stdout, want)
 	}
 
@@ -156,13 +182,46 @@ func TestEndToEnd(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr, "404 (project_not_found)") {
 		t.Errorf("delete repetido: código %d, stderr %q; quero 1 e 404 project_not_found", code, stderr)
 	}
+
+	// 8. Logout: revoga a sessão no servidor (o token antigo deixa de valer
+	// na hora) e apaga o arquivo; sem sessão, o CLI pede login.
+	runEnvmem(t, "logout", "--servidor", url, "--ca", ca)
+	wantStatus(t, "token depois do logout", http.StatusUnauthorized,
+		request(t, hc, http.MethodGet, url+"/v1/auth/me", ""))
+	if _, err := loadToken(); !errors.Is(err, errNoSession) {
+		t.Errorf("o arquivo do token deveria ter sido apagado: %v", err)
+	}
+	if _, _, stderr, code := execEnvmem(t, projects("list")...); code == 0 || !strings.Contains(stderr, "envmem login") {
+		t.Errorf("sem sessão: código %d, stderr %q; quero erro pedindo login", code, stderr)
+	}
+}
+
+// bearerTransport acrescenta o token de sessão (se houver) a cada
+// requisição, como o CLI faz.
+type bearerTransport struct {
+	base  http.RoundTripper
+	token *string
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if *b.token != "" {
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", "Bearer "+*b.token)
+	}
+	return b.base.RoundTrip(r)
 }
 
 // runEnvmem roda o envmem (o próprio binário de teste) num processo filho e
 // falha o teste se ele sair com erro.
 func runEnvmem(t *testing.T, args ...string) (pid int, stdout, stderr string) {
 	t.Helper()
-	pid, stdout, stderr, code := execEnvmem(t, args...)
+	return runEnvmemIn(t, "", args...)
+}
+
+// runEnvmemIn é o runEnvmem com stdin (por exemplo, a senha do login).
+func runEnvmemIn(t *testing.T, stdin string, args ...string) (pid int, stdout, stderr string) {
+	t.Helper()
+	pid, stdout, stderr, code := execEnvmemIn(t, stdin, args...)
 	if code != 0 {
 		t.Fatalf("envmem %v: saiu com %d\nstderr: %s", args, code, stderr)
 	}
@@ -173,8 +232,14 @@ func runEnvmem(t *testing.T, args ...string) (pid int, stdout, stderr string) {
 // saída, para os casos em que o erro é o resultado esperado.
 func execEnvmem(t *testing.T, args ...string) (pid int, stdout, stderr string, code int) {
 	t.Helper()
+	return execEnvmemIn(t, "", args...)
+}
+
+func execEnvmemIn(t *testing.T, stdin string, args ...string) (pid int, stdout, stderr string, code int) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestEndToEnd$")
 	cmd.Env = append(os.Environ(), e2eEnv+"="+strings.Join(args, "\x1f"))
+	cmd.Stdin = strings.NewReader(stdin)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	// Sair com código diferente de zero é um resultado; não conseguir nem

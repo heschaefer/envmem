@@ -61,17 +61,28 @@ func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Ti
 	}
 
 	mux := http.NewServeMux()
+
+	// Rotas públicas: a lista é explícita e curta (decisão 5). O unseal não
+	// exige sessão porque a própria chave-mestra é a credencial (decisão 2),
+	// e o login é justamente onde a sessão nasce.
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST /v1/unseal", s.handleUnseal)
 	mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /v1/auth/logout", s.requireAuth(s.handleLogout))
-	mux.HandleFunc("GET /v1/auth/me", s.requireAuth(s.handleMe))
-	mux.HandleFunc("POST /v1/auth/password", s.requireAuth(s.handleChangePassword))
-	mux.HandleFunc("GET /v1/projects", s.handleListProjects)
-	mux.HandleFunc("POST /v1/projects", s.handleCreateProject)
-	mux.HandleFunc("DELETE /v1/projects/{project}", s.handleDeleteProject)
-	mux.HandleFunc("GET /v1/projects/{project}/secrets", s.handleListSecrets)
-	mux.HandleFunc("PUT /v1/projects/{project}/secrets/{key}", s.handlePutSecret)
+
+	// Todas as outras exigem sessão. Registrá-las só por esta função faz a
+	// falha ser fechada: uma rota nova sem autenticação teria de ser posta,
+	// de propósito, na lista acima.
+	private := func(pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, s.requireAuth(h))
+	}
+	private("POST /v1/auth/logout", s.handleLogout)
+	private("GET /v1/auth/me", s.handleMe)
+	private("POST /v1/auth/password", s.handleChangePassword)
+	private("GET /v1/projects", s.handleListProjects)
+	private("POST /v1/projects", s.handleCreateProject)
+	private("DELETE /v1/projects/{project}", s.handleDeleteProject)
+	private("GET /v1/projects/{project}/secrets", s.handleListSecrets)
+	private("PUT /v1/projects/{project}/secrets/{key}", s.handlePutSecret)
 
 	// Qualquer outra rota (ou método) cai aqui, para que até o 404 siga o
 	// formato de erro JSON da API em vez do texto puro do net/http.

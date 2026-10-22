@@ -26,6 +26,12 @@ const maxResponseBytes = 1 << 20 // 1 MiB
 type Client struct {
 	baseURL string
 	http    *http.Client
+	token   string // token de sessão; vazio antes do login
+}
+
+// SetToken define o token de sessão enviado nas próximas requisições.
+func (c *Client) SetToken(token string) {
+	c.token = token
 }
 
 // New cria um cliente para o servidor em baseURL (por exemplo,
@@ -117,6 +123,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, want i
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	// O token vai só no cabeçalho, nunca na URL: URLs aparecem em logs de
+	// servidores e proxies.
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

@@ -29,6 +29,19 @@ func TestBuildEnv(t *testing.T) {
 	}
 }
 
+// As variáveis ENVMEM_* (do próprio envmem) não chegam à aplicação.
+func TestBuildEnvDropsEnvmemVars(t *testing.T) {
+	base := []string{"HOME=/home/dev", "ENVMEM_TOKEN=nao-pode-passar", "ENVMEM_X=y", "MY_ENVMEM_OK=1"}
+	env, err := buildEnv(base, []client.Secret{{Key: "DB_PASSWORD", Value: "s"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"HOME=/home/dev", "MY_ENVMEM_OK=1", "DB_PASSWORD=s"}
+	if !slices.Equal(env, want) {
+		t.Errorf("env = %q\nquero %q", env, want)
+	}
+}
+
 func TestBuildEnvRejects(t *testing.T) {
 	tests := []struct {
 		name    string

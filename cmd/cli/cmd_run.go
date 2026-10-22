@@ -35,7 +35,7 @@ func cmdRun(args []string) int {
 		return 2
 	}
 
-	c, err := conn.client()
+	c, err := conn.authedClient()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
 		return 2
@@ -45,7 +45,7 @@ func cmdRun(args []string) int {
 	secrets, err := c.Secrets(ctx, *projeto)
 	cancel()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
+		printError(err)
 		return 1
 	}
 

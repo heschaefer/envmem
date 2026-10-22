@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/heschaefer/envmem/internal/auth"
+	"github.com/heschaefer/envmem/internal/store"
 	"github.com/heschaefer/envmem/internal/vault"
 )
 
@@ -22,6 +25,9 @@ type testEnv struct {
 	store *memStore
 	logs  *bytes.Buffer
 	clock *testClock
+	// token é a sessão usada por do: a de um superadmin criado em
+	// newTestEnv. Os testes de autenticação usam doAs com outros tokens.
+	token string
 }
 
 type testClock struct{ t time.Time }
@@ -34,12 +40,19 @@ func newTestEnv(t *testing.T) *testEnv {
 	clock := &testClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
 	e := &testEnv{vault: vault.New(), store: &memStore{now: clock.now}, logs: &bytes.Buffer{}, clock: clock}
 	e.h = newRouter(slog.New(slog.NewJSONHandler(e.logs, nil)), e.store, e.vault, clock.now)
+	e.store.addUser(store.User{Email: "root@empresa.com", GlobalRole: store.RoleSuperadmin, PasswordHash: rootHash()})
+	e.token = e.tokenFor(t, "root@empresa.com", testPassword)
 	return e
 }
 
+// rootHash é o hash de testPassword, calculado uma vez para todos os
+// testes (cada argon2id leva dezenas de milissegundos).
+var rootHash = sync.OnceValue(func() string { return auth.HashPassword([]byte(testPassword)) })
+
+// do faz a requisição com a sessão do superadmin do ambiente.
 func (e *testEnv) do(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	return e.doAs(t, "", method, path, body)
+	return e.doAs(t, e.token, method, path, body)
 }
 
 // doAs faz a requisição com o token no cabeçalho Authorization (se não for
