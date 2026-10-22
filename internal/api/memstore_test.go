@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -24,6 +26,80 @@ type memStore struct {
 	users    []store.User
 	sessions []memSession
 	members  map[[2]string]string // (projeto, usuário) -> papel
+	audit    []store.AuditEvent
+	// failAudit simula a falha ao gravar a auditoria (para testar a falha
+	// fechada).
+	failAudit bool
+}
+
+var errAuditTest = errors.New("auditoria indisponível (teste)")
+
+func (m *memStore) InsertAudit(ctx context.Context, events ...store.AuditEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failAudit {
+		return errAuditTest
+	}
+	for _, e := range events {
+		e.At = m.now()
+		m.audit = append(m.audit, e)
+	}
+	return nil
+}
+
+func (m *memStore) ListAudit(ctx context.Context, f store.AuditFilter) ([]store.AuditEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []store.AuditEvent
+	for i := len(m.audit) - 1; i >= 0 && len(out) < f.Limit; i-- {
+		if f.ProjectName == "" || m.audit[i].ProjectName == f.ProjectName {
+			out = append(out, m.audit[i])
+		}
+	}
+	return out, nil
+}
+
+// InTx imita uma transação: guarda uma cópia do estado e a devolve se fn
+// falhar, como um ROLLBACK.
+func (m *memStore) InTx(ctx context.Context, fn func(tx Store) error) error {
+	m.mu.Lock()
+	snap := memSnapshot{
+		projects: append([]store.Project(nil), m.projects...),
+		secrets:  append([]store.SecretRow(nil), m.secrets...),
+		users:    append([]store.User(nil), m.users...),
+		sessions: append([]memSession(nil), m.sessions...),
+		members:  maps.Clone(m.members),
+		audit:    append([]store.AuditEvent(nil), m.audit...),
+	}
+	m.mu.Unlock()
+	if err := fn(m); err != nil {
+		m.mu.Lock()
+		m.projects, m.secrets, m.users, m.sessions, m.members, m.audit =
+			snap.projects, snap.secrets, snap.users, snap.sessions, snap.members, snap.audit
+		m.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+type memSnapshot struct {
+	projects []store.Project
+	secrets  []store.SecretRow
+	users    []store.User
+	sessions []memSession
+	members  map[[2]string]string
+	audit    []store.AuditEvent
+}
+
+// actions devolve as ações registradas na auditoria, em ordem.
+func (m *memStore) actions() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, e := range m.audit {
+		out = append(out, e.Action+":"+e.Result)
+	}
+	return out
 }
 
 func (m *memStore) MemberRole(ctx context.Context, projectID, userID string) (string, error) {

@@ -87,6 +87,8 @@ func TestRouteRoleMatrix(t *testing.T) {
 			"superadmin": ok, "admin": ok, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": notFound}},
 		{"GET", "/v1/projects/demo/members", "", map[string]string{
 			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
+		{"GET", "/v1/audit", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": forbidden}},
 		{"GET", "/v1/users", "", map[string]string{
 			"superadmin": ok, "admin": forbidden, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": forbidden}},
 		{"POST", "/v1/users", `{"email":"novo-{role}@empresa.com","temp_password":"senha temporaria longa"}`, map[string]string{

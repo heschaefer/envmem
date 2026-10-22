@@ -13,8 +13,8 @@ import (
 	"github.com/heschaefer/envmem/internal/vault"
 )
 
-// Store é o que a API usa do banco. *store.Store a implementa; os testes da
-// API usam uma versão em memória.
+// Store é o que a API usa do banco. FromStore adapta o *store.Store; os
+// testes da API usam uma versão em memória.
 type Store interface {
 	GetVaultMeta(ctx context.Context) (store.VaultMeta, error)
 	InsertVaultMeta(ctx context.Context, m store.VaultMeta) (bool, error)
@@ -43,6 +43,11 @@ type Store interface {
 	RestoreSecret(ctx context.Context, projectID, key string) (int, error)
 	PurgeSecret(ctx context.Context, projectID, key string) (int, error)
 	ListTrash(ctx context.Context, projectID string) ([]store.TrashedSecret, error)
+	InsertAudit(ctx context.Context, events ...store.AuditEvent) error
+	ListAudit(ctx context.Context, f store.AuditFilter) ([]store.AuditEvent, error)
+	// InTx roda fn numa transação: as escritas e o evento de auditoria são
+	// confirmados juntos ou desfeitos juntos (decisão 7).
+	InTx(ctx context.Context, fn func(tx Store) error) error
 	InsertSecretVersion(ctx context.Context, row store.SecretRow) (int, error)
 }
 
@@ -98,6 +103,7 @@ func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Ti
 		mux.HandleFunc(pattern, s.requireAuth(s.authorize(p, h)))
 	}
 	route("POST /v1/seal", auth.PermSeal, s.handleSeal)
+	route("GET /v1/audit", auth.PermReadAudit, s.handleListAudit)
 	route("POST /v1/auth/logout", auth.PermSession, s.handleLogout)
 	route("GET /v1/auth/me", auth.PermSession, s.handleMe)
 	route("POST /v1/auth/password", auth.PermSession, s.handleChangePassword)

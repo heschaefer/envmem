@@ -92,7 +92,7 @@ func serve(logger *slog.Logger, cfg config.Server) error {
 		TLSConfig: tlsConfig,
 		// O cofre nasce selado: a chave-mestra só chega pelo POST /v1/unseal
 		// e fica só em memória. Reiniciar o servidor = selar.
-		Handler: api.NewRouter(logger, st, vault.New()),
+		Handler: api.NewRouter(logger, api.FromStore(st), vault.New()),
 		// Limites de tempo evitam que clientes lentos (ou maliciosos) prendam
 		// conexões abertas indefinidamente.
 		ReadHeaderTimeout: 5 * time.Second,

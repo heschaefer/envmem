@@ -31,7 +31,7 @@ func (s *Store) CreateFirstSuperadmin(ctx context.Context, email, passwordHash s
 		WHERE NOT EXISTS (SELECT 1 FROM users WHERE global_role = 'superadmin')
 		RETURNING id, email, coalesce(global_role, ''), password_hash, temp_password_expires_at, created_at`
 
-	u, err := scanUser(s.pool.QueryRow(ctx, q, email, passwordHash))
+	u, err := scanUser(s.db.QueryRow(ctx, q, email, passwordHash))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrSuperadminExists
 	}
@@ -52,7 +52,7 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 		FROM users
 		WHERE email = $1`
 
-	u, err := scanUser(s.pool.QueryRow(ctx, q, email))
+	u, err := scanUser(s.db.QueryRow(ctx, q, email))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -71,7 +71,7 @@ func (s *Store) ChangePassword(ctx context.Context, userID, passwordHash string,
 	const update = `UPDATE users SET password_hash = $2, temp_password_expires_at = NULL WHERE id = $1`
 	const revoke = `DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`
 
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, update, userID, passwordHash)
 		if err != nil {
 			return fmt.Errorf("store: trocar senha: %w", err)
@@ -93,7 +93,7 @@ func (s *Store) UserByID(ctx context.Context, id string) (User, error) {
 		FROM users
 		WHERE id = $1`
 
-	u, err := scanUser(s.pool.QueryRow(ctx, q, id))
+	u, err := scanUser(s.db.QueryRow(ctx, q, id))
 	if errors.Is(err, pgx.ErrNoRows) || isInvalidText(err) {
 		return User{}, ErrNotFound
 	}
@@ -110,7 +110,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 		FROM users
 		ORDER BY email`
 
-	rows, err := s.pool.Query(ctx, q)
+	rows, err := s.db.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar usuários: %w", err)
 	}
@@ -137,7 +137,7 @@ func (s *Store) CreateUser(ctx context.Context, email, globalRole, passwordHash 
 		VALUES ($1, NULLIF($2, ''), $3, $4)
 		RETURNING id, email, coalesce(global_role, ''), password_hash, temp_password_expires_at, created_at`
 
-	u, err := scanUser(s.pool.QueryRow(ctx, q, email, globalRole, passwordHash, tempExpiresAt))
+	u, err := scanUser(s.db.QueryRow(ctx, q, email, globalRole, passwordHash, tempExpiresAt))
 	if isUniqueViolation(err) {
 		return User{}, ErrConflict
 	}
@@ -153,7 +153,7 @@ func (s *Store) CreateUser(ctx context.Context, email, globalRole, passwordHash 
 // durante a conferência: duas remoções simultâneas dos dois últimos
 // superadmins não conseguem passar as duas.
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		supers, err := lockSuperadmins(ctx, tx)
 		if err != nil {
 			return err
@@ -178,7 +178,7 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 // ResetPassword define uma senha temporária para o usuário (decisão 46) e
 // revoga todas as sessões dele, na mesma transação.
 func (s *Store) ResetPassword(ctx context.Context, id, passwordHash string, tempExpiresAt time.Time) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		return resetPassword(ctx, tx, id, passwordHash, tempExpiresAt)
 	})
 }
@@ -189,7 +189,7 @@ func (s *Store) ResetPassword(ctx context.Context, id, passwordHash string, temp
 // ErrNotSuperadmin ou ErrSuperadminExists quando não se aplica.
 func (s *Store) ResetLoneSuperadminPassword(ctx context.Context, email, passwordHash string, tempExpiresAt time.Time) (User, error) {
 	var u User
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		supers, err := lockSuperadmins(ctx, tx)
 		if err != nil {
 			return err

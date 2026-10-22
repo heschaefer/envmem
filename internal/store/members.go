@@ -33,7 +33,7 @@ func (s *Store) MemberRole(ctx context.Context, projectID, userID string) (strin
 	const q = `SELECT role FROM members WHERE project_id = $1 AND user_id = $2`
 
 	var role string
-	err := s.pool.QueryRow(ctx, q, projectID, userID).Scan(&role)
+	err := s.db.QueryRow(ctx, q, projectID, userID).Scan(&role)
 	if errors.Is(err, pgx.ErrNoRows) || isInvalidText(err) {
 		return "", ErrNotFound
 	}
@@ -50,7 +50,7 @@ func (s *Store) SetMember(ctx context.Context, projectID, userID, role string) e
 		INSERT INTO members (project_id, user_id, role) VALUES ($1, $2, $3)
 		ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`
 
-	_, err := s.pool.Exec(ctx, q, projectID, userID, role)
+	_, err := s.db.Exec(ctx, q, projectID, userID, role)
 	if isForeignKeyViolation(err) {
 		return ErrNotFound
 	}
@@ -69,7 +69,7 @@ func (s *Store) ProjectsForMember(ctx context.Context, userID string) ([]Project
 		WHERE m.user_id = $1
 		ORDER BY p.name`
 
-	rows, err := s.pool.Query(ctx, q, userID)
+	rows, err := s.db.Query(ctx, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar projetos do usuário: %w", err)
 	}
@@ -97,7 +97,7 @@ func (s *Store) ListMembers(ctx context.Context, projectID string) ([]Member, er
 		WHERE m.project_id = $1
 		ORDER BY u.email`
 
-	rows, err := s.pool.Query(ctx, q, projectID)
+	rows, err := s.db.Query(ctx, q, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar membros: %w", err)
 	}
@@ -119,7 +119,7 @@ func (s *Store) ListMembers(ctx context.Context, projectID string) ([]Member, er
 // RemoveMember tira o usuário do projeto, ou devolve ErrNotFound se ele não
 // for membro.
 func (s *Store) RemoveMember(ctx context.Context, projectID, userID string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM members WHERE project_id = $1 AND user_id = $2`, projectID, userID)
+	tag, err := s.db.Exec(ctx, `DELETE FROM members WHERE project_id = $1 AND user_id = $2`, projectID, userID)
 	if isInvalidText(err) {
 		return ErrNotFound
 	}

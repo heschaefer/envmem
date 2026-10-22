@@ -36,8 +36,17 @@ func projectFrom(ctx context.Context) projectAccess {
 func (s *server) authorize(p auth.Permission, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user := sessionFrom(r.Context()).user
+		// Toda negação vai para a auditoria (decisão 7), com a permissão que
+		// faltou e, se for o caso, o projeto pedido (pelo nome, mesmo que ele
+		// não exista: tentativas de adivinhar nomes também ficam registradas).
+		denied := func(projectID string) {
+			e := s.event(r, p.Name, store.AuditDenied)
+			e.ProjectID, e.ProjectName = projectID, r.PathValue("project")
+			s.recordDenied(r, e)
+		}
 		if !p.Project {
 			if !p.Allows(auth.GlobalRole(user.GlobalRole)) {
+				denied("")
 				writeForbidden(w)
 				return
 			}
@@ -48,6 +57,7 @@ func (s *server) authorize(p auth.Permission, next http.HandlerFunc) http.Handle
 		name := r.PathValue("project")
 		project, err := s.store.ProjectByName(r.Context(), name)
 		if errors.Is(err, store.ErrNotFound) {
+			denied("")
 			writeProjectNotFound(w)
 			return
 		}
@@ -68,10 +78,12 @@ func (s *server) authorize(p auth.Permission, next http.HandlerFunc) http.Handle
 		}
 		role, ok := auth.ProjectRole(user.GlobalRole, memberRole)
 		if !ok {
+			denied(project.ID)
 			writeProjectNotFound(w)
 			return
 		}
 		if !p.Allows(role) {
+			denied(project.ID)
 			writeForbidden(w)
 			return
 		}

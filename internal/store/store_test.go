@@ -704,3 +704,69 @@ func TestTrashAndRetention(t *testing.T) {
 		t.Fatalf("projeto sem segredos deveria sair: %v", err)
 	}
 }
+
+// Auditoria e transações, rodando como envmem_app.
+func TestAuditAndInTx(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	if err := openStore(t, url).Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, asAppRole(url))
+	u, _ := s.CreateFirstSuperadmin(ctx, "root@empresa.com", "h")
+	p := createProject(t, s, "demo")
+
+	err := s.InsertAudit(ctx,
+		AuditEvent{Action: "vault.unseal", RemoteAddr: "10.0.0.5", Result: AuditFailure},
+		AuditEvent{UserID: u.ID, UserEmail: u.Email, RemoteAddr: "::1", Action: "secret.run",
+			ProjectID: p.ID, ProjectName: "demo", SecretKey: "DB_PASSWORD", SecretVersion: 3, Result: AuditSuccess},
+	)
+	if err != nil {
+		t.Fatalf("InsertAudit: %v", err)
+	}
+	got, err := s.ListAudit(ctx, AuditFilter{Limit: 10})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ListAudit = %+v, %v", got, err)
+	}
+	// Mais recente primeiro; campos vazios voltam vazios (NULL no banco).
+	if got[0].Action != "secret.run" || got[0].SecretVersion != 3 || got[0].RemoteAddr != "::1" || got[0].UserEmail != u.Email {
+		t.Errorf("evento = %+v", got[0])
+	}
+	if got[1].UserID != "" || got[1].ProjectName != "" || got[1].RemoteAddr != "10.0.0.5" {
+		t.Errorf("evento sem usuário = %+v", got[1])
+	}
+	if f, _ := s.ListAudit(ctx, AuditFilter{ProjectName: "demo", Limit: 10}); len(f) != 1 {
+		t.Errorf("filtro por projeto: %+v", f)
+	}
+
+	// Vários eventos entram juntos ou nenhum entra (um IP inválido derruba
+	// o lote inteiro).
+	if err := s.InsertAudit(ctx, AuditEvent{Action: "a", Result: AuditSuccess}, AuditEvent{Action: "b", RemoteAddr: "nao-e-ip", Result: AuditSuccess}); err == nil {
+		t.Fatal("IP inválido aceito")
+	}
+	if n, _ := s.ListAudit(ctx, AuditFilter{Limit: 10}); len(n) != 2 {
+		t.Fatalf("lote parcial gravado: %d eventos", len(n))
+	}
+
+	// InTx: se o evento falha, a alteração é desfeita junto.
+	err = s.InTx(ctx, func(tx *Store) error {
+		if _, err := tx.CreateProject(ctx, "nao-deveria-ficar"); err != nil {
+			return err
+		}
+		return tx.InsertAudit(ctx, AuditEvent{Action: "x", Result: "resultado-invalido"})
+	})
+	if err == nil {
+		t.Fatal("o evento inválido deveria falhar")
+	}
+	if _, err := s.ProjectByName(ctx, "nao-deveria-ficar"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a alteração deveria ter sido desfeita: %v", err)
+	}
+	// E métodos com transação própria funcionam dentro do InTx (savepoint).
+	err = s.InTx(ctx, func(tx *Store) error {
+		_, err := tx.InsertSecretVersion(ctx, row(p.ID, "K", "c"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("InsertSecretVersion dentro do InTx: %v", err)
+	}
+}

@@ -34,7 +34,7 @@ func (s *Store) InsertSecretVersion(ctx context.Context, row SecretRow) (int, er
 	const prune = `DELETE FROM secrets WHERE project_id = $1 AND key = $2 AND version <= $3`
 
 	var version int
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, insert,
 			row.ProjectID, row.Key, row.Ciphertext, row.Nonce, row.WrappedDEK, row.DEKNonce,
 		).Scan(&version)
@@ -72,7 +72,7 @@ func (s *Store) LatestSecrets(ctx context.Context, projectID string) ([]SecretRo
 		WHERE project_id = $1 AND deleted_at IS NULL
 		ORDER BY key, version DESC`
 
-	rows, err := s.pool.Query(ctx, q, projectID)
+	rows, err := s.db.Query(ctx, q, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar segredos: %w", err)
 	}
@@ -104,7 +104,7 @@ func (s *Store) SecretVersion(ctx context.Context, projectID, key string, versio
 		LIMIT 1`
 
 	r := SecretRow{ProjectID: projectID}
-	err := s.pool.QueryRow(ctx, q, projectID, key, version).
+	err := s.db.QueryRow(ctx, q, projectID, key, version).
 		Scan(&r.Key, &r.Version, &r.Ciphertext, &r.Nonce, &r.WrappedDEK, &r.DEKNonce, &r.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SecretRow{}, ErrNotFound
@@ -125,7 +125,7 @@ func (s *Store) SecretsMeta(ctx context.Context, projectID string) ([]SecretMeta
 		GROUP BY key
 		ORDER BY key`
 
-	rows, err := s.pool.Query(ctx, q, projectID)
+	rows, err := s.db.Query(ctx, q, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar segredos: %w", err)
 	}
@@ -180,7 +180,7 @@ func (s *Store) PurgeSecret(ctx context.Context, projectID, key string) (int, er
 // markTrash roda q (que devolve as versões afetadas) e devolve a maior, ou
 // ErrNotFound se nenhuma linha foi afetada.
 func (s *Store) markTrash(ctx context.Context, q, projectID, key string) (int, error) {
-	rows, err := s.pool.Query(ctx, q, projectID, key)
+	rows, err := s.db.Query(ctx, q, projectID, key)
 	if err != nil {
 		return 0, fmt.Errorf("store: lixeira: %w", err)
 	}
@@ -203,7 +203,7 @@ func (s *Store) ListTrash(ctx context.Context, projectID string) ([]TrashedSecre
 		GROUP BY key
 		ORDER BY key`
 
-	rows, err := s.pool.Query(ctx, q, projectID)
+	rows, err := s.db.Query(ctx, q, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar lixeira: %w", err)
 	}
