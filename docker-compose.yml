@@ -15,6 +15,9 @@ services:
       # Na imagem postgres:18 o volume é montado em /var/lib/postgresql
       # (e não em /var/lib/postgresql/data, como nas versões antigas).
       - pgdata:/var/lib/postgresql
+      # Cria o usuário restrito envmem_app na primeira subida com volume
+      # vazio. Num volume que já existe, use "make db-roles".
+      - ./scripts/db-init:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -33,7 +36,10 @@ services:
       - gomod:/go/pkg/mod
       - claude:/home/dev/.claude
     environment:
-      DATABASE_URL: postgres://envmem:envmem_dev@db:5432/envmem?sslmode=disable
+      # Decisão 42: o servidor opera com o usuário restrito (envmem_app); o
+      # dono das tabelas (envmem) só é usado pelo "envmem-server migrate".
+      DATABASE_URL: postgres://envmem_app:envmem_app_dev@db:5432/envmem?sslmode=disable
+      DATABASE_MIGRATE_URL: postgres://envmem:envmem_dev@db:5432/envmem?sslmode=disable
       ENVMEM_LISTEN_ADDR: ":8080"
     ports:
       - "8080:8080"

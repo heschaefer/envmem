@@ -40,14 +40,24 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// Como no servidor real (decisão 42): migra como dono e opera como
+	// envmem_app. Se faltar algum privilégio na migração, este teste falha.
 	dbURL := tempSchemaURL(t)
-	st, err := store.Open(ctx, dbURL)
+	owner, err := store.Open(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(owner.Close)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, dbURL+"&options=-c%20role%3Denvmem_app")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatal(err)
+	if err := st.CheckRestricted(ctx); err != nil {
+		t.Fatalf("o roteador deveria rodar com o usuário restrito: %v", err)
 	}
 
 	// startServer simula uma subida do envmem-server: cofre novo (selado),
@@ -220,13 +230,13 @@ func assertNoPlaintextInDB(t *testing.T, dbURL, value string) {
 	}
 }
 
-// tempSchemaURL cria um schema temporário e devolve a URL do banco apontando
-// para ele (search_path). O schema é apagado no fim do teste.
+// tempSchemaURL cria um schema temporário e devolve a URL do banco, como
+// dono, apontando para ele (search_path). O schema é apagado no fim do teste.
 func tempSchemaURL(t *testing.T) string {
 	t.Helper()
-	url := os.Getenv("DATABASE_URL")
+	url := os.Getenv("DATABASE_MIGRATE_URL")
 	if url == "" {
-		t.Skip("DATABASE_URL não definida")
+		t.Skip("DATABASE_MIGRATE_URL não definida (URL do usuário dono do banco)")
 	}
 	ctx := context.Background()
 	schema := "test_" + strings.ToLower(rand.Text()[:10])
@@ -237,7 +247,15 @@ func tempSchemaURL(t *testing.T) string {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "CREATE SCHEMA "+ident); err != nil {
+	// As migrações dão privilégios ao envmem_app, então ele precisa existir
+	// (em desenvolvimento, quem o cria é o scripts/db-init). A exceção cobre
+	// outro pacote de teste criando ao mesmo tempo.
+	ensureAppRole := `DO $$ BEGIN CREATE ROLE envmem_app NOLOGIN;
+		EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$`
+	if _, err := conn.Exec(ctx, ensureAppRole); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA "+ident+"; GRANT USAGE ON SCHEMA "+ident+" TO envmem_app"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

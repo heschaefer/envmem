@@ -14,15 +14,27 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// newTestStore abre o banco num schema temporário, aplica as migrações e
-// apaga o schema no fim do teste. Assim os testes não tocam nas tabelas da
-// demonstração.
-func newTestStore(t *testing.T) *Store {
+// ensureAppRoleSQL cria o envmem_app (sem login) se ainda não existir, para
+// que as migrações consigam dar privilégios a ele. Em desenvolvimento, quem
+// cria o usuário de verdade é o scripts/db-init. A exceção cobre dois
+// pacotes de teste criando ao mesmo tempo.
+const ensureAppRoleSQL = `
+DO $$
+BEGIN
+    CREATE ROLE envmem_app NOLOGIN;
+EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
+END
+$$`
+
+// tempSchemaURL cria um schema temporário e devolve a URL do banco, como
+// dono, apontando para ele. O schema é apagado no fim do teste. Assim os
+// testes não tocam nas tabelas da demonstração.
+func tempSchemaURL(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
-	url := os.Getenv("DATABASE_URL")
+	url := os.Getenv("DATABASE_MIGRATE_URL")
 	if url == "" {
-		t.Skip("DATABASE_URL não definida")
+		t.Skip("DATABASE_MIGRATE_URL não definida (URL do usuário dono do banco)")
 	}
 
 	schema := "test_" + strings.ToLower(rand.Text()[:10])
@@ -31,8 +43,12 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatalf("conectar: %v", err)
 	}
 	defer admin.Close(ctx)
+	if _, err := admin.Exec(ctx, ensureAppRoleSQL); err != nil {
+		t.Fatalf("criar envmem_app: %v", err)
+	}
 	ident := pgx.Identifier{schema}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+ident); err != nil {
+	// O envmem_app precisa de USAGE para enxergar as tabelas do schema.
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+ident+"; GRANT USAGE ON SCHEMA "+ident+" TO envmem_app"); err != nil {
 		t.Fatalf("criar schema: %v", err)
 	}
 	t.Cleanup(func() {
@@ -51,12 +67,30 @@ func newTestStore(t *testing.T) *Store {
 	if strings.Contains(url, "?") {
 		sep = "&"
 	}
-	s, err := Open(ctx, url+sep+"search_path="+schema)
+	return url + sep + "search_path=" + schema
+}
+
+// asAppRole devolve a URL com a sessão rodando como envmem_app (o "role"
+// vai como parâmetro de início de sessão), sem precisar da senha dele.
+func asAppRole(url string) string {
+	return url + "&options=-c%20role%3Denvmem_app"
+}
+
+func openStore(t *testing.T, url string) *Store {
+	t.Helper()
+	s, err := Open(context.Background(), url)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(s.Close)
-	if err := s.Migrate(ctx); err != nil {
+	return s
+}
+
+// newTestStore abre, como dono, um schema temporário já migrado.
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	s := openStore(t, tempSchemaURL(t))
+	if err := s.Migrate(context.Background()); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return s
@@ -243,4 +277,110 @@ func TestVaultMeta(t *testing.T) {
 	if string(got.CheckCiphertext) != "primeiro" {
 		t.Errorf("valor de verificação foi sobrescrito: %q", got.CheckCiphertext)
 	}
+}
+
+func TestCheckMigrated(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	owner := openStore(t, url)
+
+	// Banco nunca migrado (sem a tabela do goose) conta como pendente.
+	if err := owner.CheckMigrated(ctx); !errors.Is(err, ErrPendingMigrations) {
+		t.Fatalf("antes do migrate: %v, quero ErrPendingMigrations", err)
+	}
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// O envmem_app consegue conferir: só lê a tabela de controle do goose.
+	if err := openStore(t, asAppRole(url)).CheckMigrated(ctx); err != nil {
+		t.Fatalf("depois do migrate, como envmem_app: %v", err)
+	}
+
+	// Banco anterior à 00003: o envmem_app ainda não pode ler a tabela do
+	// goose, e isso também conta como pendente.
+	if _, err := owner.pool.Exec(ctx, `REVOKE SELECT ON goose_db_version FROM envmem_app`); err != nil {
+		t.Fatal(err)
+	}
+	if err := openStore(t, asAppRole(url)).CheckMigrated(ctx); !errors.Is(err, ErrPendingMigrations) {
+		t.Fatalf("sem SELECT na tabela do goose: %v, quero ErrPendingMigrations", err)
+	}
+
+	// Simula um binário mais novo que o banco: a última migração some do
+	// registro do goose.
+	if _, err := owner.pool.Exec(ctx, `DELETE FROM goose_db_version WHERE version_id = (SELECT max(version_id) FROM goose_db_version)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.CheckMigrated(ctx); !errors.Is(err, ErrPendingMigrations) {
+		t.Fatalf("com migração faltando: %v, quero ErrPendingMigrations", err)
+	}
+}
+
+// O servidor só sobe com o usuário restrito: o dono das tabelas (aqui,
+// também superusuário) é recusado.
+func TestCheckRestricted(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	owner := openStore(t, url)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := owner.CheckRestricted(ctx); !errors.Is(err, ErrPrivilegedUser) {
+		t.Fatalf("como dono: %v, quero ErrPrivilegedUser", err)
+	}
+	if err := openStore(t, asAppRole(url)).CheckRestricted(ctx); err != nil {
+		t.Fatalf("como envmem_app: %v", err)
+	}
+}
+
+// A garantia da auditoria fica no banco, não no código: o envmem_app insere
+// e lê eventos, mas não consegue alterar, apagar nem truncar, nem com SQL
+// escrito à mão.
+func TestAppRoleCannotTamperWithAudit(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	if err := openStore(t, url).Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	app, err := pgx.Connect(ctx, asAppRole(url))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close(ctx)
+
+	if _, err := app.Exec(ctx, `INSERT INTO audit_events (action, result) VALUES ('teste', 'success')`); err != nil {
+		t.Fatalf("INSERT na auditoria deveria funcionar: %v", err)
+	}
+	var n int
+	if err := app.QueryRow(ctx, `SELECT count(*) FROM audit_events`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("SELECT na auditoria = %d, %v", n, err)
+	}
+
+	for _, q := range []string{
+		`UPDATE audit_events SET result = 'denied'`,
+		`DELETE FROM audit_events`,
+		`TRUNCATE audit_events`,
+		`DROP TABLE audit_events`,
+		`ALTER TABLE audit_events DISABLE TRIGGER ALL`,
+		`TRUNCATE secrets`,
+		`DROP TABLE secrets`,
+	} {
+		if _, err := app.Exec(ctx, q); !isPermissionDenied(err) {
+			t.Errorf("%s: erro = %v, quero permissão negada", q, err)
+		}
+	}
+
+	// Tentar se dar o privilégio não dá erro no PostgreSQL: sem permissão de
+	// repassá-lo, o GRANT só emite um aviso e não concede nada. Por isso o
+	// que se confere é o efeito: o DELETE continua negado.
+	app.Exec(ctx, `GRANT DELETE ON audit_events TO envmem_app`)
+	if _, err := app.Exec(ctx, `DELETE FROM audit_events`); !isPermissionDenied(err) {
+		t.Errorf("DELETE depois do GRANT: erro = %v, quero permissão negada", err)
+	}
+}
+
+// isPermissionDenied diz se err é recusa de privilégio (42501) ou de dono
+// (o PostgreSQL usa 42501 para os dois casos).
+func isPermissionDenied(err error) bool {
+	return hasCode(err, "42501")
 }
