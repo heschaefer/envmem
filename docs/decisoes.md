@@ -1,6 +1,6 @@
 # Registro de decisões de arquitetura
 
-Cada decisão segue o formato de ADR (Architecture Decision Record) curto: contexto, decisão e consequências. Os números 1 a 11 vêm das discussões iniciais do projeto; as decisões 10 e 11 ainda estão em aberto. As demais começam no 12 e estão agrupadas por assunto.
+Cada decisão segue o formato de ADR (Architecture Decision Record) curto: contexto, decisão e consequências. Os números 1 a 11 vêm das discussões iniciais do projeto; só a decisão 10 ainda está em aberto. As demais começam no 12 e estão agrupadas por assunto.
 
 **Status possíveis:** aceita (implementada), aceita para fatia futura (decidida, ainda não implementada), substituída (trocada por outra decisão, indicada no texto), descartada e em aberto.
 
@@ -11,12 +11,12 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 1 | Chave-mestra cifra diretamente as DEKs | aceita (Fatia 2) |
 | 2 | Unseal por rota sem autenticação, com valor de verificação | aceita (Fatia 2) |
 | 3 | Token de sessão opaco | aceita para a Fatia 4 |
-| 4 | Token do CLI em arquivo com permissão 600 | aceita para a Fatia 5 |
+| 4 | Token do CLI em arquivo com permissão 600 | aceita para a Fatia 4 (antecipada da Fatia 5) |
 | 5 | RBAC com permissão declarada na rota | aceita para a Fatia 4 |
 | 6 | Acesso negado a projeto: 404 para quem não é membro, 403 para papel insuficiente | aceita para a Fatia 4 |
 | 7 | Auditoria de eventos de segurança, com falha fechada | aceita para a Fatia 4 |
 | 10 | Credenciais dinâmicas para PostgreSQL no TCC I | em aberto |
-| 11 | DELETE de segredo e retenção de versões | em aberto |
+| 11 | Lixeira de segredos, exclusão definitiva por admin e retenção de 10 versões | aceita para a Fatia 4 |
 | 12 | Go e PostgreSQL 18 | aceita |
 | 13 | Injeção por `syscall.Exec` no `run` | aceita (Fatia 1) |
 | 14 | Envelope encryption com AES-256-GCM | aceita (Fatia 2) |
@@ -271,11 +271,11 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 
 **Status:** aceita (Fatia 3)
 
-**Contexto:** apagar um projeto com segredos levanta a mesma questão da decisão 11 (apagar de vez ou só marcar como removido), que está em aberto.
+**Contexto:** apagar um projeto com segredos levanta a mesma questão da decisão 11 (apagar de vez ou só marcar como removido), que estava em aberto na Fatia 3.
 
 **Decisão:** só é possível apagar projeto vazio. Com segredos, a resposta é 409 (`project_not_empty`). Quem garante a regra é o próprio banco, com `ON DELETE RESTRICT` na chave estrangeira de `secrets`.
 
-**Consequências:** nenhum segredo é apagado em massa por engano, e a decisão 11 não é antecipada. Como a recusa vem do banco, não existe intervalo entre conferir que o projeto está vazio e apagá-lo em que outra requisição poderia gravar um segredo. Se um projeto for apagado no meio de um `PUT`, a chave estrangeira recusa a gravação, e a resposta é 404.
+**Consequências:** nenhum segredo é apagado em massa por engano, e a decisão 11 não foi antecipada. Com a lixeira (decisão 11, Fatia 4), segredos removidos continuam no banco, então o projeto só fica vazio, e pode ser apagado, depois que admin ou superadmin os excluir definitivamente. Como a recusa vem do banco, não existe intervalo entre conferir que o projeto está vazio e apagá-lo em que outra requisição poderia gravar um segredo. Se um projeto for apagado no meio de um `PUT`, a chave estrangeira recusa a gravação, e a resposta é 404.
 
 ### 32. Subcomando `envmem projects` já na Fatia 3
 
@@ -318,13 +318,13 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 
 ### 4. Token do CLI em arquivo com permissão 600
 
-**Status:** aceita para a Fatia 5
+**Status:** aceita; antecipada da Fatia 5 para a Fatia 4 (22/10/2026), porque o servidor passa a exigir token e o CLI não pode ficar sem funcionar
 
-**Contexto:** o CLI precisa guardar o token entre um comando e outro.
+**Contexto:** o CLI precisa guardar o token entre um comando e outro. Um malware rodando como o próprio usuário consegue ler o token onde quer que ele esteja (arquivo, memória de processo ou ambiente), então a escolha do lugar não protege contra esse caso. Foi avaliada a alternativa de guardar o token numa variável de ambiente (`ENVMEM_TOKEN`): ela some ao fechar o terminal, mas é herdada por todo processo filho do shell (scripts de instalação de pacotes, ferramentas de relatório de erros, a própria aplicação no `run`) e, se colada à mão, vai para o histórico do shell, que é um arquivo em disco.
 
-**Decisão:** o token fica em `~/.config/envmem/token`, com permissão 600. `envmem logout` apaga o arquivo e revoga o token no servidor.
+**Decisão:** o token fica em `~/.config/envmem/token`, com permissão 600, gravado pelo `envmem login`. `envmem logout` revoga a sessão no servidor (apaga a linha da tabela de sessões) e apaga o arquivo. Se o servidor não responder no logout, o CLI apaga o arquivo mesmo assim e avisa que a sessão continua válida no servidor até vencer. Antes do exec, o `run` remove do ambiente qualquer variável `ENVMEM_*`, para nenhuma credencial do envmem chegar à aplicação.
 
-**Consequências:** só o próprio usuário lê o token. É o único arquivo que o CLI grava com uma credencial; o `run` continua sem criar arquivos.
+**Consequências:** só o próprio usuário lê o token. É o único arquivo que o CLI grava com uma credencial; o `run` continua sem criar arquivos. O estrago de um token roubado é limitado pela validade de 8 horas, pela revogação imediata (o token opaco é conferido no banco a cada requisição, decisão 3) e pela auditoria com IP de origem (decisão 7). Guardar o token no chaveiro do sistema operacional, que o cifra em disco, fica como hardening no TCC II; ele não funciona dentro do dev container.
 
 ### 33. Quatro papéis, globais e por projeto
 
@@ -434,6 +434,20 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 **Consequências:** a adivinhação de senhas fica lenta e a memória do servidor fica protegida, sem que um atacante consiga deixar a conta de alguém indisponível por tempo indeterminado. Os contadores zeram quando o servidor reinicia, e o limite por IP perde força quando muitos usuários saem pelo mesmo endereço. As falhas continuam registradas na auditoria (decisão 7).
 
+### 11. Lixeira de segredos, exclusão definitiva por admin e retenção de 10 versões
+
+**Status:** aceita para a Fatia 4 (decidida em 22/10/2026)
+
+**Contexto:** cada `PUT` cria uma versão nova, e o contrato da API permite consultar versões antigas (`?version=`). Apagar de vez não tem volta: um `DELETE` errado de uma senha de produção só se resolve gravando o valor de novo. Marcar como removido permite desfazer, mas guarda credenciais antigas. E, se a chave-mestra vazar, todas as versões guardadas podem ser decifradas, então cada versão antiga é uma credencial a mais exposta nesse cenário.
+
+**Decisão:**
+- **Remover** (`DELETE /projects/{p}/secrets/{key}`) manda o segredo, com as versões que ele tem, para a lixeira: ele sai do `run` e das listagens, mas pode ser restaurado. Remover e restaurar são permitidos a gestor (nos projetos dele), admin e superadmin.
+- **Excluir definitivamente** apaga do banco todas as versões de um segredo que está na lixeira. Só admin e superadmin podem. Quando o MFA existir (decisão 36), a exclusão definitiva pede o código do autenticador de novo, no momento da ação, além do MFA do login.
+- **Retenção:** cada segredo guarda as 10 versões mais recentes. No `PUT`, na mesma transação, as versões além dessas 10 são apagadas.
+- Remover, restaurar e excluir definitivamente são registrados na auditoria (decisão 7).
+
+**Consequências:** um erro do gestor pode ser desfeito, e a ação irreversível fica com quem tem mais privilégio, sem exigir um fluxo de aprovação. A tabela de papéis passa a separar "remover e restaurar" de "excluir definitivamente". A retenção limita as credenciais antigas expostas se a chave-mestra vazar; a auditoria guarda só o número da versão, então perguntas como "quem recebeu a versão 3?" continuam respondidas depois que o valor dela é apagado. Apagar uma linha não a remove dos backups do banco nem do WAL do PostgreSQL; tornar ilegível o que ficou num backup exige trocar a chave que o cifrou (rotação, TCC II), e uma chave intermediária por projeto permitiria fazer isso projeto a projeto (crypto-shredding). Ficam para a implementação: o que acontece com um `PUT` numa chave que está na lixeira e se a lixeira se esvazia sozinha depois de um prazo.
+
 ### 36. MFA para superadmin, admin e gestor
 
 **Status:** aceita para depois do núcleo
@@ -499,4 +513,3 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 Discutir antes de implementar a fatia correspondente.
 
 - **10. A Fatia 6 (credenciais dinâmicas para PostgreSQL, com usuário temporário e `VALID UNTIL`) entra no TCC I?**
-- **11. O `DELETE` de segredo apaga de vez ou só marca como removido? As versões antigas são guardadas para sempre?** Enquanto não for decidida, a decisão 30 impede apagar projeto com segredos.
