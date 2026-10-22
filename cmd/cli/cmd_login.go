@@ -6,13 +6,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/term"
 )
 
 // cmdLogin implementa "envmem login [opções] EMAIL": pede a senha, abre uma
-// sessão no servidor e grava o token em ~/.config/envmem/token (600).
+// sessão no servidor e grava o token em ~/.config/envmem/token (600) e o
+// endereço do servidor e a CA em ~/.config/envmem/config.json (decisão 38),
+// que os próximos comandos usam sem precisar de --servidor e --ca.
 func cmdLogin(args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	conn := addConnFlags(fs)
@@ -33,7 +36,20 @@ func cmdLogin(args []string) int {
 	}
 	email := fs.Arg(0)
 
-	c, err := conn.client()
+	cfg, err := conn.resolve()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
+		return 2
+	}
+	// O config.json é lido de qualquer pasta, então o caminho relativo
+	// passado em --ca (por exemplo, certs/ca.crt) vira absoluto.
+	if cfg.CA != "" {
+		if cfg.CA, err = filepath.Abs(cfg.CA); err != nil {
+			fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
+			return 2
+		}
+	}
+	c, err := newClient(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
 		return 2
@@ -65,6 +81,13 @@ func cmdLogin(args []string) int {
 		}
 	}
 
+	// A configuração só é gravada depois do login aceito: um endereço
+	// digitado errado não substitui um config.json que funcionava.
+	if err := saveConfig(cfg); err != nil {
+		c.Logout(ctx)
+		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
+		return 1
+	}
 	if err := saveToken(res.Token); err != nil {
 		c.Logout(ctx)
 		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)

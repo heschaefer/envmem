@@ -97,7 +97,9 @@ func TestEndToEnd(t *testing.T) {
 	const value = "S3nh@-de-ponta-a-ponta"
 
 	// 0. Sem sessão, nada além das rotas públicas. O envmem login grava o
-	// token em ~/.config/envmem/token, que os próximos comandos usam.
+	// token em ~/.config/envmem/token e o servidor e a CA em
+	// ~/.config/envmem/config.json, que os próximos comandos usam sem
+	// precisar de --servidor e --ca.
 	url := startServer()
 	wantStatus(t, "GET sem sessão", http.StatusUnauthorized,
 		request(t, hc, http.MethodGet, url+"/v1/projects", ""))
@@ -108,10 +110,13 @@ func TestEndToEnd(t *testing.T) {
 	if token, err = loadToken(); err != nil {
 		t.Fatalf("o login deveria ter gravado o token: %v", err)
 	}
+	if cfg, err := loadConfig(); err != nil || cfg != (cliConfig{Server: url, CA: ca}) {
+		t.Fatalf("config.json = %+v, %v; quero servidor %s e CA %s", cfg, err, url, ca)
+	}
 
 	// 1. Cria o projeto demo pelo CLI (não depende do cofre). O servidor
 	// subiu selado: GET de segredos devolve 503.
-	if _, stdout, _ := runEnvmem(t, "projects", "create", "--servidor", url, "--ca", ca, "demo"); stdout != "projeto demo criado\n" {
+	if _, stdout, _ := runEnvmem(t, "projects", "create", "demo"); stdout != "projeto demo criado\n" {
 		t.Errorf("projects create: stdout = %q", stdout)
 	}
 	wantStatus(t, "GET selado", http.StatusServiceUnavailable,
@@ -122,7 +127,7 @@ func TestEndToEnd(t *testing.T) {
 		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
 	// 3. Lista os projetos pelo CLI e grava o segredo DB_PASSWORD no demo.
-	if _, stdout, _ := runEnvmem(t, "projects", "list", "--servidor", url, "--ca", ca); stdout != "demo\n" {
+	if _, stdout, _ := runEnvmem(t, "projects", "list"); stdout != "demo\n" {
 		t.Errorf("projects list: stdout = %q, quero %q", stdout, "demo\n")
 	}
 	wantStatus(t, "PUT", http.StatusCreated,
@@ -133,7 +138,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// 5. envmem run: o comando recebe a senha, no mesmo PID que o envmem
 	// imprimiu antes do exec, e não recebe as variáveis ENVMEM_*.
-	pid, stdout, stderr := runEnvmem(t, "run", "--verbose", "--servidor", url, "--ca", ca, "--projeto", "demo",
+	pid, stdout, stderr := runEnvmem(t, "run", "--verbose", "--projeto", "demo",
 		"--", "sh", "-c", `echo "$$ $DB_PASSWORD [$ENVMEM_SEGREDO_TESTE]"`)
 	if want := fmt.Sprintf("envmem: pid %d,", pid); !strings.HasPrefix(stderr, want) {
 		t.Errorf("stderr = %q, quero começar com %q", stderr, want)
@@ -143,6 +148,8 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// 6. Reinício: volta selado; só a mesma chave abre, e o segredo continua lá.
+	// O servidor de teste sobe noutro endereço, diferente do config.json:
+	// daqui em diante, --servidor sobrescreve o arquivo.
 	url = startServer()
 	wantStatus(t, "GET depois do reinício", http.StatusServiceUnavailable,
 		request(t, hc, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
@@ -150,7 +157,7 @@ func TestEndToEnd(t *testing.T) {
 		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+vault.EncodeKey(vault.GenerateKey())+`"}`))
 	wantStatus(t, "unseal com a chave certa", http.StatusOK,
 		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
-	_, stdout, _ = runEnvmem(t, "run", "--servidor", url, "--ca", ca, "--projeto", "demo", "--", "sh", "-c", `echo "$DB_PASSWORD"`)
+	_, stdout, _ = runEnvmem(t, "run", "--servidor", url, "--projeto", "demo", "--", "sh", "-c", `echo "$DB_PASSWORD"`)
 	if stdout != value+"\n" {
 		t.Errorf("depois do reinício, stdout = %q, quero %q", stdout, value+"\n")
 	}
