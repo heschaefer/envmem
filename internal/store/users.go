@@ -186,7 +186,8 @@ func (s *Store) ResetPassword(ctx context.Context, id, passwordHash string, temp
 // ResetLoneSuperadminPassword é o reset do "envmem-server reset-password"
 // (decisão 46): só vale para um superadmin, e só quando não há outro
 // superadmin que possa fazer o reset pela API. Devolve ErrNotFound,
-// ErrNotSuperadmin ou ErrSuperadminExists quando não se aplica.
+// ErrNotSuperadmin ou ErrSuperadminExists quando não se aplica. O evento
+// de auditoria entra na mesma transação.
 func (s *Store) ResetLoneSuperadminPassword(ctx context.Context, email, passwordHash string, tempExpiresAt time.Time) (User, error) {
 	var u User
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
@@ -211,7 +212,17 @@ func (s *Store) ResetLoneSuperadminPassword(ctx context.Context, email, password
 		if len(supers) > 1 {
 			return ErrSuperadminExists
 		}
-		return resetPassword(ctx, tx, u.ID, passwordHash, tempExpiresAt)
+		if err := resetPassword(ctx, tx, u.ID, passwordHash, tempExpiresAt); err != nil {
+			return err
+		}
+		// Registrado na mesma transação (decisões 7 e 46). Sem usuário nem IP:
+		// a ação foi feita direto no servidor, fora da API.
+		return (&Store{db: tx}).InsertAudit(ctx, AuditEvent{
+			Action:       "user.password_reset.server",
+			TargetUserID: u.ID,
+			TargetEmail:  u.Email,
+			Result:       AuditSuccess,
+		})
 	})
 	return u, err
 }

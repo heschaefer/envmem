@@ -122,3 +122,123 @@ func TestListAudit(t *testing.T) {
 	wantError(t, e.doAs(t, e.tokens["admin"], http.MethodGet, "/v1/audit?limit=0", ""), http.StatusBadRequest, "invalid_limit")
 	wantError(t, e.doAs(t, e.tokens["gestor"], http.MethodGet, "/v1/audit", ""), http.StatusForbidden, "forbidden")
 }
+
+// O login identifica o usuário só se o e-mail existir: o texto digitado
+// num e-mail inexistente não é guardado.
+func TestAuditLogin(t *testing.T) {
+	e := newTestEnv(t)
+	e.addUser(t, "dev@empresa.com", testPassword, 0)
+	e.store.audit = nil
+
+	e.login(t, "dev@empresa.com", "senha errada mas longa")
+	e.login(t, "senha-digitada-no-campo-errado", testPassword)
+	e.tokenFor(t, "dev@empresa.com", testPassword)
+
+	ev := e.store.audit
+	if len(ev) != 3 {
+		t.Fatalf("eventos = %+v", ev)
+	}
+	if ev[0].Action != "auth.login" || ev[0].Result != store.AuditFailure || ev[0].UserEmail != "dev@empresa.com" {
+		t.Errorf("senha errada = %+v", ev[0])
+	}
+	if ev[1].Result != store.AuditFailure || ev[1].UserID != "" || ev[1].UserEmail != "" {
+		t.Errorf("e-mail inexistente = %+v", ev[1])
+	}
+	if ev[2].Result != store.AuditSuccess || ev[2].UserEmail != "dev@empresa.com" {
+		t.Errorf("sucesso = %+v", ev[2])
+	}
+	for _, x := range ev {
+		if strings.Contains(x.UserEmail+x.TargetEmail, "senha-digitada") {
+			t.Fatalf("o texto digitado foi guardado: %+v", x)
+		}
+	}
+}
+
+// Fluxo administrativo completo: cada passo deixa um evento.
+func TestAuditAdminActions(t *testing.T) {
+	e := openEnv(t)
+	e.store.audit = nil
+
+	u := decode[userItem](t, e.do(t, http.MethodPost, "/v1/users", `{"email":"dev@empresa.com","temp_password":"temporaria bem longa"}`))
+	e.do(t, http.MethodPost, "/v1/projects/demo/members", `{"email":"dev@empresa.com","role":"desenvolvedor"}`)
+	e.do(t, http.MethodDelete, "/v1/projects/demo/members/"+u.ID, "")
+	e.do(t, http.MethodPost, "/v1/users/"+u.ID+"/password/reset", `{"temp_password":"outra temporaria longa"}`)
+	e.do(t, http.MethodDelete, "/v1/users/"+u.ID, "")
+	e.createProject(t, "temp")
+	e.do(t, http.MethodDelete, "/v1/projects/temp", "")
+	e.do(t, http.MethodPost, "/v1/seal", "")
+
+	want := []string{"user.create:success", "member.set:success", "member.remove:success",
+		"user.password_reset:success", "user.delete:success", "project.create:success",
+		"project.delete:success", "vault.seal:success"}
+	if got := e.store.actions(); !slices.Equal(got, want) {
+		t.Fatalf("ações = %q\nquero   %q", got, want)
+	}
+	// O usuário afetado fica registrado pelo id e pelo e-mail.
+	for _, ev := range e.store.audit[:5] {
+		if ev.TargetUserID != u.ID || ev.TargetEmail != "dev@empresa.com" || ev.UserEmail != "root@empresa.com" {
+			t.Errorf("%s: alvo = %q %q, autor = %q", ev.Action, ev.TargetUserID, ev.TargetEmail, ev.UserEmail)
+		}
+	}
+	if e.store.audit[1].Role != "desenvolvedor" || e.store.audit[1].ProjectName != "demo" {
+		t.Errorf("member.set = %+v", e.store.audit[1])
+	}
+}
+
+func TestAuditVault(t *testing.T) {
+	e := newTestEnv(t)
+	e.store.audit = nil // o login do superadmin do ambiente
+	key := vaultKey(t)
+	e.unseal(t, key)
+	e.vault.Seal()
+	e.unseal(t, vaultKey(t)) // chave errada
+	got := e.store.actions()
+	if !slices.Equal(got, []string{"vault.unseal:success", "vault.unseal:failure"}) {
+		t.Fatalf("ações = %q", got)
+	}
+	if ev := e.store.audit[1]; ev.UserID != "" || ev.RemoteAddr != "192.0.2.1" {
+		t.Errorf("unseal sem sessão: %+v", ev)
+	}
+}
+
+// Falha fechada nas ações que dão acesso; seal e logout são a exceção.
+func TestAuditFailClosedOnAccessChanges(t *testing.T) {
+	e := openEnv(t)
+	e.addUser(t, "dev@empresa.com", testPassword, 0)
+	devToken := e.tokenFor(t, "dev@empresa.com", testPassword)
+	e.store.failAudit = true
+
+	// Login: sem registro, sem sessão.
+	wantError(t, e.login(t, "dev@empresa.com", testPassword), http.StatusInternalServerError, "audit_failed")
+	// Projeto, usuário e membro: nada fica gravado.
+	wantError(t, e.do(t, http.MethodPost, "/v1/projects", `{"name":"novo"}`), http.StatusInternalServerError, "audit_failed")
+	wantError(t, e.do(t, http.MethodPost, "/v1/users", `{"email":"x@empresa.com","temp_password":"temporaria bem longa"}`), http.StatusInternalServerError, "audit_failed")
+	wantError(t, e.do(t, http.MethodPost, "/v1/projects/demo/members", `{"email":"dev@empresa.com","role":"desenvolvedor"}`), http.StatusInternalServerError, "audit_failed")
+	if _, err := e.store.ProjectByName(t.Context(), "novo"); err == nil {
+		t.Error("projeto criado sem auditoria")
+	}
+	if _, err := e.store.UserByEmail(t.Context(), "x@empresa.com"); err == nil {
+		t.Error("usuário criado sem auditoria")
+	}
+	if list, _ := e.store.ListMembers(t.Context(), "id-1"); len(list) != 0 {
+		t.Errorf("membro gravado sem auditoria: %+v", list)
+	}
+
+	// Logout: a sessão cai mesmo sem registro.
+	if rec := e.doAs(t, devToken, http.MethodPost, "/v1/auth/logout", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("logout sem auditoria: %d", rec.Code)
+	}
+	e.store.failAudit = false
+	wantError(t, e.doAs(t, devToken, http.MethodGet, "/v1/auth/me", ""), http.StatusUnauthorized, "unauthorized")
+	e.store.failAudit = true
+
+	// Seal: o cofre fica selado mesmo sem registro.
+	if rec := e.do(t, http.MethodPost, "/v1/seal", ""); rec.Code != http.StatusOK || !e.vault.Sealed() {
+		t.Fatalf("seal sem auditoria: %d, selado = %v", rec.Code, e.vault.Sealed())
+	}
+	// Unseal: sem registro, o cofre volta a ficar selado.
+	wantError(t, e.unseal(t, e.key), http.StatusInternalServerError, "audit_failed")
+	if !e.vault.Sealed() {
+		t.Fatal("o cofre ficou aberto sem auditoria do unseal")
+	}
+}

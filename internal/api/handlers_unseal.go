@@ -45,6 +45,7 @@ func (s *server) handleUnseal(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, vault.ErrWrongKey):
 		s.logger.Warn("unseal recusado: chave-mestra incorreta")
+		s.recordDenied(r, s.event(r, "vault.unseal", store.AuditFailure))
 		writeError(w, http.StatusUnauthorized, "invalid_master_key", "chave-mestra incorreta")
 		return
 	case errors.Is(err, vault.ErrAlreadyUnsealed):
@@ -56,6 +57,14 @@ func (s *server) handleUnseal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A chave já está na memória, e memória não tem rollback: se o registro
+	// falhar, o cofre é selado de novo (falha fechada).
+	if err := s.store.InsertAudit(r.Context(), s.event(r, "vault.unseal", store.AuditSuccess)); err != nil {
+		s.vault.Seal()
+		s.logger.Error("auditoria: registrar unseal (cofre selado de novo)", "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	s.logger.Info("cofre aberto")
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Sealed: false})
 }
@@ -89,6 +98,11 @@ func (s *server) handleSeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.vault.Seal()
+	// Exceção à falha fechada (decisão 7): selar tira acesso, então o
+	// cofre fica selado mesmo que o registro falhe.
+	if err := s.store.InsertAudit(r.Context(), s.event(r, "vault.seal", store.AuditSuccess)); err != nil {
+		s.logger.Error("auditoria: registrar seal (o cofre foi selado mesmo assim)", "err", err)
+	}
 	s.logger.Info("cofre selado", "user_id", sessionFrom(r.Context()).user.ID)
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Sealed: true})
 }

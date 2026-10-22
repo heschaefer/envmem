@@ -617,6 +617,11 @@ func TestResetLoneSuperadminPassword(t *testing.T) {
 	if got, _ := s.UserByID(ctx, u.ID); got.PasswordHash != "h-novo" || got.TempPasswordExpiresAt == nil {
 		t.Fatalf("depois do reset: %+v", got)
 	}
+	// O reset feito no servidor fica na auditoria, sem autor (fora da API).
+	ev, _ := s.ListAudit(ctx, AuditFilter{Limit: 1})
+	if len(ev) != 1 || ev[0].Action != "user.password_reset.server" || ev[0].TargetEmail != "root@empresa.com" || ev[0].UserID != "" {
+		t.Fatalf("evento do reset = %+v", ev)
+	}
 
 	// Com um segundo superadmin, o reset deve ser feito por ele, pela API.
 	if _, err := s.CreateUser(ctx, "super2@empresa.com", RoleSuperadmin, "h", exp); err != nil {

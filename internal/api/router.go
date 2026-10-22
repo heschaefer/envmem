@@ -32,6 +32,7 @@ type Store interface {
 	ListProjects(ctx context.Context) ([]store.Project, error)
 	DeleteProject(ctx context.Context, name string) error
 	UserByEmail(ctx context.Context, email string) (store.User, error)
+	UserByID(ctx context.Context, id string) (store.User, error)
 	CreateSession(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error
 	UserBySession(ctx context.Context, tokenHash []byte) (store.User, error)
 	DeleteSession(ctx context.Context, tokenHash []byte) error

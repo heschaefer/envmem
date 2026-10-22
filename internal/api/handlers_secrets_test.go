@@ -20,11 +20,18 @@ const secretPath = "/v1/projects/demo/secrets"
 func openEnv(t *testing.T) *testEnv {
 	t.Helper()
 	e := newTestEnv(t)
-	if rec := e.unseal(t, vault.EncodeKey(vault.GenerateKey())); rec.Code != http.StatusOK {
+	e.key = vaultKey(t)
+	if rec := e.unseal(t, e.key); rec.Code != http.StatusOK {
 		t.Fatalf("unseal: %d", rec.Code)
 	}
 	e.createProject(t, "demo")
 	return e
+}
+
+// vaultKey gera uma chave-mestra nova, em base64.
+func vaultKey(t *testing.T) string {
+	t.Helper()
+	return vault.EncodeKey(vault.GenerateKey())
 }
 
 func (e *testEnv) put(t *testing.T, project, key, value string) *httptest.ResponseRecorder {
