@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/heschaefer/envmem/internal/auth"
 	"github.com/heschaefer/envmem/internal/store"
@@ -70,5 +71,44 @@ func TestReadLine(t *testing.T) {
 		if err != nil || string(got) != want {
 			t.Errorf("readLine(%q) = %q, %v; quero %q", in, got, err, want)
 		}
+	}
+}
+
+type fakeResetter struct {
+	email, hash string
+	expires     time.Time
+	err         error
+}
+
+func (f *fakeResetter) ResetLoneSuperadminPassword(ctx context.Context, email, hash string, exp time.Time) (store.User, error) {
+	f.email, f.hash, f.expires = email, hash, exp
+	return store.User{}, f.err
+}
+
+func TestResetLoneSuperadmin(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	f := &fakeResetter{}
+	email, err := resetLoneSuperadmin(context.Background(), f, "Admin@Empresa.com", []byte("temporaria bem longa"), now)
+	if err != nil || email != "admin@empresa.com" {
+		t.Fatalf("reset = %q, %v", email, err)
+	}
+	if !f.expires.Equal(now.Add(72 * time.Hour)) {
+		t.Errorf("validade = %v, quero 72 horas", f.expires)
+	}
+	if ok, _ := auth.VerifyPassword(f.hash, []byte("temporaria bem longa")); !ok {
+		t.Error("o hash não confere com a senha")
+	}
+
+	for errIn, want := range map[error]string{
+		store.ErrNotSuperadmin:    "só redefine a senha de superadmin",
+		store.ErrSuperadminExists: "há outro superadmin",
+		store.ErrNotFound:         "não existe usuário",
+	} {
+		if _, err := resetLoneSuperadmin(context.Background(), &fakeResetter{err: errIn}, "a@b.com", []byte("temporaria bem longa"), now); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%v: erro = %v, quero %q", errIn, err, want)
+		}
+	}
+	if _, err := resetLoneSuperadmin(context.Background(), &fakeResetter{}, "a@b.com", []byte("curta"), now); !errors.Is(err, auth.ErrPasswordPolicy) {
+		t.Errorf("senha curta: %v", err)
 	}
 }

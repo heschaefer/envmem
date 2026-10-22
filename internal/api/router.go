@@ -22,6 +22,13 @@ type Store interface {
 	ProjectByName(ctx context.Context, name string) (store.Project, error)
 	MemberRole(ctx context.Context, projectID, userID string) (string, error)
 	ProjectsForMember(ctx context.Context, userID string) ([]store.ProjectMembership, error)
+	ListMembers(ctx context.Context, projectID string) ([]store.Member, error)
+	SetMember(ctx context.Context, projectID, userID, role string) error
+	RemoveMember(ctx context.Context, projectID, userID string) error
+	ListUsers(ctx context.Context) ([]store.User, error)
+	CreateUser(ctx context.Context, email, globalRole, passwordHash string, tempExpiresAt time.Time) (store.User, error)
+	DeleteUser(ctx context.Context, id string) error
+	ResetPassword(ctx context.Context, id, passwordHash string, tempExpiresAt time.Time) error
 	ListProjects(ctx context.Context) ([]store.Project, error)
 	DeleteProject(ctx context.Context, name string) error
 	UserByEmail(ctx context.Context, email string) (store.User, error)
@@ -84,12 +91,20 @@ func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Ti
 		}
 		mux.HandleFunc(pattern, s.requireAuth(s.authorize(p, h)))
 	}
+	route("POST /v1/seal", auth.PermSeal, s.handleSeal)
 	route("POST /v1/auth/logout", auth.PermSession, s.handleLogout)
 	route("GET /v1/auth/me", auth.PermSession, s.handleMe)
 	route("POST /v1/auth/password", auth.PermSession, s.handleChangePassword)
 	route("GET /v1/projects", auth.PermSession, s.handleListProjects)
 	route("POST /v1/projects", auth.PermManageProjects, s.handleCreateProject)
 	route("DELETE /v1/projects/{project}", auth.PermManageProjects, s.handleDeleteProject)
+	route("GET /v1/projects/{project}/members", auth.PermManageMembers, s.handleListMembers)
+	route("POST /v1/projects/{project}/members", auth.PermManageMembers, s.handleSetMember)
+	route("DELETE /v1/projects/{project}/members/{user}", auth.PermManageMembers, s.handleRemoveMember)
+	route("GET /v1/users", auth.PermManageUsers, s.handleListUsers)
+	route("POST /v1/users", auth.PermManageUsers, s.handleCreateUser)
+	route("DELETE /v1/users/{user}", auth.PermManageUsers, s.handleDeleteUser)
+	route("POST /v1/users/{user}/password/reset", auth.PermManageUsers, s.handleResetPassword)
 	route("GET /v1/projects/{project}/secrets", auth.PermUseSecrets, s.handleListSecrets)
 	route("PUT /v1/projects/{project}/secrets/{key}", auth.PermWriteSecrets, s.handlePutSecret)
 

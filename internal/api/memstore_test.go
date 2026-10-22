@@ -240,3 +240,89 @@ func (m *memStore) LatestSecrets(ctx context.Context, projectID string) ([]store
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil
 }
+
+func (m *memStore) ListMembers(ctx context.Context, projectID string) ([]store.Member, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []store.Member
+	for _, u := range m.users {
+		if role, ok := m.members[[2]string{projectID, u.ID}]; ok {
+			out = append(out, store.Member{UserID: u.ID, Email: u.Email, Role: role})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Email < out[j].Email })
+	return out, nil
+}
+
+func (m *memStore) SetMember(ctx context.Context, projectID, userID, role string) error {
+	m.setMember(projectID, userID, role)
+	return nil
+}
+
+func (m *memStore) RemoveMember(ctx context.Context, projectID, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := [2]string{projectID, userID}
+	if _, ok := m.members[k]; !ok {
+		return store.ErrNotFound
+	}
+	delete(m.members, k)
+	return nil
+}
+
+func (m *memStore) ListUsers(ctx context.Context) ([]store.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := append([]store.User(nil), m.users...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Email < out[j].Email })
+	return out, nil
+}
+
+func (m *memStore) CreateUser(ctx context.Context, email, globalRole, passwordHash string, tempExpiresAt time.Time) (store.User, error) {
+	if _, err := m.UserByEmail(ctx, email); err == nil {
+		return store.User{}, store.ErrConflict
+	}
+	return m.addUser(store.User{Email: email, GlobalRole: globalRole, PasswordHash: passwordHash, TempPasswordExpiresAt: &tempExpiresAt}), nil
+}
+
+func (m *memStore) DeleteUser(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	supers, idx := 0, -1
+	for i, u := range m.users {
+		if u.GlobalRole == store.RoleSuperadmin {
+			supers++
+		}
+		if u.ID == id {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return store.ErrNotFound
+	}
+	if m.users[idx].GlobalRole == store.RoleSuperadmin && supers == 1 {
+		return store.ErrLastSuperadmin
+	}
+	m.users = append(m.users[:idx], m.users[idx+1:]...)
+	m.sessions = filterSessions(m.sessions, func(s memSession) bool { return s.userID != id })
+	for k := range m.members {
+		if k[1] == id {
+			delete(m.members, k)
+		}
+	}
+	return nil
+}
+
+func (m *memStore) ResetPassword(ctx context.Context, id, passwordHash string, tempExpiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.users {
+		if m.users[i].ID == id {
+			m.users[i].PasswordHash = passwordHash
+			m.users[i].TempPasswordExpiresAt = &tempExpiresAt
+			m.sessions = filterSessions(m.sessions, func(s memSession) bool { return s.userID != id })
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}

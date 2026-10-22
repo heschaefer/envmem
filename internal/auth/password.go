@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -34,6 +35,10 @@ const (
 	MinPasswordLen = 12
 	MaxPasswordLen = 128
 )
+
+// TempPasswordTTL é a validade de uma senha temporária (decisão 43):
+// depois disso, ela não entra mais e o superadmin precisa definir outra.
+const TempPasswordTTL = 72 * time.Hour
 
 var (
 	// ErrPasswordPolicy indica senha fora dos limites de tamanho.
