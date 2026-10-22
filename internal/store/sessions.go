@@ -16,10 +16,10 @@ func (s *Store) CreateSession(ctx context.Context, tokenHash []byte, userID stri
 	const cleanup = `DELETE FROM sessions WHERE user_id = $1 AND expires_at <= now()`
 	const insert = `INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`
 
-	if _, err := s.pool.Exec(ctx, cleanup, userID); err != nil {
+	if _, err := s.db.Exec(ctx, cleanup, userID); err != nil {
 		return fmt.Errorf("store: limpar sessões vencidas: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, insert, tokenHash, userID, expiresAt); err != nil {
+	if _, err := s.db.Exec(ctx, insert, tokenHash, userID, expiresAt); err != nil {
 		return fmt.Errorf("store: criar sessão: %w", err)
 	}
 	return nil
@@ -34,7 +34,7 @@ func (s *Store) UserBySession(ctx context.Context, tokenHash []byte) (User, erro
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now()`
 
-	u, err := scanUser(s.pool.QueryRow(ctx, q, tokenHash))
+	u, err := scanUser(s.db.QueryRow(ctx, q, tokenHash))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -47,7 +47,7 @@ func (s *Store) UserBySession(ctx context.Context, tokenHash []byte) (User, erro
 // DeleteSession revoga uma sessão. Revogar uma sessão que não existe não é
 // erro: o resultado (não existir) é o mesmo.
 func (s *Store) DeleteSession(ctx context.Context, tokenHash []byte) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash); err != nil {
 		return fmt.Errorf("store: revogar sessão: %w", err)
 	}
 	return nil

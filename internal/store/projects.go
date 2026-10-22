@@ -16,7 +16,7 @@ func (s *Store) CreateProject(ctx context.Context, name string) (Project, error)
 		RETURNING id, name, created_at`
 
 	var p Project
-	err := s.pool.QueryRow(ctx, q, name).Scan(&p.ID, &p.Name, &p.CreatedAt)
+	err := s.db.QueryRow(ctx, q, name).Scan(&p.ID, &p.Name, &p.CreatedAt)
 	if isUniqueViolation(err) {
 		return Project{}, ErrConflict
 	}
@@ -31,7 +31,7 @@ func (s *Store) ProjectByName(ctx context.Context, name string) (Project, error)
 	const q = `SELECT id, name, created_at FROM projects WHERE name = $1`
 
 	var p Project
-	err := s.pool.QueryRow(ctx, q, name).Scan(&p.ID, &p.Name, &p.CreatedAt)
+	err := s.db.QueryRow(ctx, q, name).Scan(&p.ID, &p.Name, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -45,7 +45,7 @@ func (s *Store) ProjectByName(ctx context.Context, name string) (Project, error)
 func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 	const q = `SELECT id, name, created_at FROM projects ORDER BY name`
 
-	rows, err := s.pool.Query(ctx, q)
+	rows, err := s.db.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar projetos: %w", err)
 	}
@@ -72,7 +72,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 func (s *Store) DeleteProject(ctx context.Context, name string) error {
 	const q = `DELETE FROM projects WHERE name = $1`
 
-	tag, err := s.pool.Exec(ctx, q, name)
+	tag, err := s.db.Exec(ctx, q, name)
 	if isRestrictViolation(err) {
 		return ErrProjectNotEmpty
 	}

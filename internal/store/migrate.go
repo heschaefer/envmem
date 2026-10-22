@@ -56,7 +56,7 @@ func (s *Store) CheckMigrated(ctx context.Context) error {
 	}
 	if err != nil {
 		var exists bool
-		if qerr := s.pool.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&exists); qerr == nil && !exists {
+		if qerr := s.db.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&exists); qerr == nil && !exists {
 			return ErrPendingMigrations
 		}
 		return fmt.Errorf("store: conferir migrações: %w", err)
@@ -82,7 +82,7 @@ func (s *Store) CheckRestricted(ctx context.Context) error {
 		WHERE c.oid = 'audit_events'::regclass`
 
 	var privileged bool
-	if err := s.pool.QueryRow(ctx, q).Scan(&privileged); err != nil {
+	if err := s.db.QueryRow(ctx, q).Scan(&privileged); err != nil {
 		return fmt.Errorf("store: conferir privilégios: %w", err)
 	}
 	if privileged {

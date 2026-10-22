@@ -50,6 +50,7 @@ func (s *server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := make([]secretItem, 0, len(rows))
+	events := make([]store.AuditEvent, 0, len(rows))
 	for _, row := range rows {
 		// O AAD usa o id do projeto: uma linha movida de outro projeto no
 		// banco não decifra aqui.
@@ -69,6 +70,17 @@ func (s *server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, secretItem{Key: row.Key, Value: string(plaintext)})
 		clear(plaintext)
+		e := s.event(r, "secret.run", store.AuditSuccess)
+		e.SecretKey, e.SecretVersion = row.Key, row.Version
+		events = append(events, e)
+	}
+	// Uma linha por segredo entregue, com a versão (decisão 7). Os eventos
+	// são gravados antes da resposta: se a gravação falhar, nenhum valor sai
+	// do servidor (falha fechada).
+	if err := s.store.InsertAudit(r.Context(), events...); err != nil {
+		s.logger.Error("auditoria: registrar entrega de segredos", "project", project.Name, "err", err)
+		writeAuditFailed(w)
+		return
 	}
 	writeJSON(w, http.StatusOK, listSecretsResponse{Project: project.Name, Secrets: items})
 }
@@ -120,14 +132,31 @@ func (s *server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version, err := s.store.InsertSecretVersion(r.Context(), store.SecretRow{
-		ProjectID:  project.ID,
-		Key:        key,
-		Ciphertext: env.Ciphertext,
-		Nonce:      env.Nonce,
-		WrappedDEK: env.WrappedDEK,
-		DEKNonce:   env.DEKNonce,
+	// A nova versão e o evento de auditoria entram na mesma transação: sem
+	// registro, a gravação é desfeita (decisão 7).
+	var version int
+	err = s.store.InTx(r.Context(), func(tx Store) error {
+		var err error
+		version, err = tx.InsertSecretVersion(r.Context(), store.SecretRow{
+			ProjectID:  project.ID,
+			Key:        key,
+			Ciphertext: env.Ciphertext,
+			Nonce:      env.Nonce,
+			WrappedDEK: env.WrappedDEK,
+			DEKNonce:   env.DEKNonce,
+		})
+		if err != nil {
+			return err
+		}
+		e := s.event(r, "secret.write", store.AuditSuccess)
+		e.SecretKey, e.SecretVersion = key, version
+		return auditErr(tx.InsertAudit(r.Context(), e))
 	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar gravação de segredo", "project", project.Name, "key", key, "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	if errors.Is(err, store.ErrConflict) {
 		writeError(w, http.StatusConflict, "conflict", "outra gravação deste segredo aconteceu ao mesmo tempo; tente de novo")
 		return
@@ -247,31 +276,55 @@ func (s *server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := secretResponse{Key: row.Key, Value: string(plaintext), Version: row.Version, CreatedAt: row.CreatedAt}
 	clear(plaintext)
+	e := s.event(r, "secret.read", store.AuditSuccess)
+	e.SecretKey, e.SecretVersion = row.Key, row.Version
+	if err := s.store.InsertAudit(r.Context(), e); err != nil {
+		s.logger.Error("auditoria: registrar leitura de segredo", "project", project.Name, "key", key, "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleTrashSecret manda o segredo para a lixeira (decisão 11): o run
 // deixa de entregá-lo, mas ele pode ser restaurado.
 func (s *server) handleTrashSecret(w http.ResponseWriter, r *http.Request) {
-	s.trashAction(w, r, "segredo enviado à lixeira", s.store.TrashSecret, writeSecretNotFound)
+	s.trashAction(w, r, "secret.trash", Store.TrashSecret, writeSecretNotFound)
 }
 
 // handleRestoreSecret tira o segredo da lixeira.
 func (s *server) handleRestoreSecret(w http.ResponseWriter, r *http.Request) {
-	s.trashAction(w, r, "segredo restaurado", s.store.RestoreSecret, writeNotInTrash)
+	s.trashAction(w, r, "secret.restore", Store.RestoreSecret, writeNotInTrash)
 }
 
 // handlePurgeSecret exclui definitivamente um segredo que está na lixeira
 // (só admin e superadmin, decisão 11). Quando o MFA existir, esta ação vai
 // pedir o código do autenticador de novo.
 func (s *server) handlePurgeSecret(w http.ResponseWriter, r *http.Request) {
-	s.trashAction(w, r, "segredo excluído definitivamente", s.store.PurgeSecret, writeNotInTrash)
+	s.trashAction(w, r, "secret.purge", Store.PurgeSecret, writeNotInTrash)
 }
 
-func (s *server) trashAction(w http.ResponseWriter, r *http.Request, logMsg string,
-	op func(ctx context.Context, projectID, key string) (int, error), notFound func(http.ResponseWriter)) {
+// trashAction roda a operação de lixeira e o evento de auditoria na mesma
+// transação.
+func (s *server) trashAction(w http.ResponseWriter, r *http.Request, action string,
+	op func(st Store, ctx context.Context, projectID, key string) (int, error), notFound func(http.ResponseWriter)) {
 	project, key := projectFrom(r.Context()).project, r.PathValue("key")
-	version, err := op(r.Context(), project.ID, key)
+	logMsg := action
+	var version int
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		var err error
+		if version, err = op(tx, r.Context(), project.ID, key); err != nil {
+			return err
+		}
+		e := s.event(r, action, store.AuditSuccess)
+		e.SecretKey, e.SecretVersion = key, version
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: "+action, "project", project.Name, "key", key, "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		notFound(w)
 		return

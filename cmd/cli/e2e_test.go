@@ -80,7 +80,7 @@ func TestEndToEnd(t *testing.T) {
 	var token string
 	ca := filepath.Join(t.TempDir(), "ca.crt")
 	startServer := func() string {
-		srv := httptest.NewUnstartedServer(api.NewRouter(slog.New(slog.DiscardHandler), st, vault.New()))
+		srv := httptest.NewUnstartedServer(api.NewRouter(slog.New(slog.DiscardHandler), api.FromStore(st), vault.New()))
 		srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
 		srv.StartTLS()
 		t.Cleanup(srv.Close)
