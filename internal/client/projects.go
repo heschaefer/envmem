@@ -12,9 +12,11 @@ import (
 type Project struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	Role string `json:"role,omitempty"` // papel de quem pediu: global (superadmin, admin) ou no projeto (gestor, desenvolvedor)
 }
 
-// Projects lista os projetos (GET /v1/projects).
+// Projects lista os projetos de quem está logado, com o papel em cada um
+// (GET /v1/projects). Quem não é membro de um projeto nem o vê.
 func (c *Client) Projects(ctx context.Context) ([]Project, error) {
 	var resp struct {
 		Projects []Project `json:"projects"`
