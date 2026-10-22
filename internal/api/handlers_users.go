@@ -79,7 +79,22 @@ func (s *server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := s.store.CreateUser(r.Context(), email, req.GlobalRole, auth.HashPassword(password), s.now().Add(auth.TempPasswordTTL))
+	var u store.User
+	err = s.store.InTx(r.Context(), func(tx Store) error {
+		var err error
+		u, err = tx.CreateUser(r.Context(), email, req.GlobalRole, auth.HashPassword(password), s.now().Add(auth.TempPasswordTTL))
+		if err != nil {
+			return err
+		}
+		e := s.event(r, "user.create", store.AuditSuccess)
+		e.TargetUserID, e.TargetEmail, e.Role = u.ID, u.Email, u.GlobalRole
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar criação de usuário", "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	if errors.Is(err, store.ErrConflict) {
 		writeError(w, http.StatusConflict, "user_exists", "já existe um usuário com esse e-mail")
 		return
@@ -101,8 +116,23 @@ func (s *server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "cannot_remove_self", "não é possível remover a si mesmo; peça a outro superadmin")
 		return
 	}
-	err := s.store.DeleteUser(r.Context(), id)
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		target, err := tx.UserByID(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		if err := tx.DeleteUser(r.Context(), id); err != nil {
+			return err
+		}
+		e := s.event(r, "user.delete", store.AuditSuccess)
+		e.TargetUserID, e.TargetEmail, e.Role = target.ID, target.Email, target.GlobalRole
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
 	switch {
+	case errors.Is(err, errAudit):
+		s.logger.Error("auditoria: registrar remoção de usuário", "err", err)
+		writeAuditFailed(w)
+		return
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "user_not_found", "usuário não encontrado")
 		return
@@ -139,7 +169,23 @@ func (s *server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.store.ResetPassword(r.Context(), id, auth.HashPassword(password), s.now().Add(auth.TempPasswordTTL))
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		target, err := tx.UserByID(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		if err := tx.ResetPassword(r.Context(), id, auth.HashPassword(password), s.now().Add(auth.TempPasswordTTL)); err != nil {
+			return err
+		}
+		e := s.event(r, "user.password_reset", store.AuditSuccess)
+		e.TargetUserID, e.TargetEmail = target.ID, target.Email
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar reset de senha", "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "user_not_found", "usuário não encontrado")
 		return

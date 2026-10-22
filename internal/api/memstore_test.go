@@ -162,6 +162,17 @@ func (m *memStore) UserByEmail(ctx context.Context, email string) (store.User, e
 	return store.User{}, store.ErrNotFound
 }
 
+func (m *memStore) UserByID(ctx context.Context, id string) (store.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.users {
+		if u.ID == id {
+			return u, nil
+		}
+	}
+	return store.User{}, store.ErrNotFound
+}
+
 func (m *memStore) CreateSession(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -28,6 +28,7 @@ type testEnv struct {
 	// token é a sessão usada por do: a de um superadmin criado em
 	// newTestEnv. Os testes de autenticação usam doAs com outros tokens.
 	token string
+	key   string // chave-mestra usada pelo openEnv
 }
 
 type testClock struct{ t time.Time }

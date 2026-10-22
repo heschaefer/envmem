@@ -54,6 +54,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		keys = append(keys, "email:"+email)
 	}
 	if wait := s.limiter.Wait(keys...); wait > 0 {
+		s.recordLogin(r, email, emailErr, store.AuditDenied)
 		writeTooManyAttempts(w, wait)
 		return
 	}
@@ -66,6 +67,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		s.limiter.Failure(keys...)
+		s.recordDenied(r, loginEvent(r, s, user, store.AuditFailure))
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "e-mail ou senha incorretos")
 		return
 	}
@@ -77,6 +79,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if exp := user.TempPasswordExpiresAt; exp != nil && !s.now().Before(*exp) {
 		// A senha estava certa, mas venceu (decisão 43). Dizer isso não
 		// ajuda um atacante: quem acertou a senha já sabia que ela existia.
+		s.recordDenied(r, loginEvent(r, s, user, store.AuditFailure))
 		writeError(w, http.StatusUnauthorized, "temp_password_expired",
 			"a senha temporária venceu; peça uma nova a um superadmin")
 		return
@@ -84,7 +87,19 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	token, hash := auth.NewToken()
 	expiresAt := s.now().Add(auth.SessionTTL)
-	if err := s.store.CreateSession(r.Context(), hash, user.ID, expiresAt); err != nil {
+	// A sessão e o evento entram juntos: sem registro, não há sessão.
+	err = s.store.InTx(r.Context(), func(tx Store) error {
+		if err := tx.CreateSession(r.Context(), hash, user.ID, expiresAt); err != nil {
+			return err
+		}
+		return auditErr(tx.InsertAudit(r.Context(), loginEvent(r, s, user, store.AuditSuccess)))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar login", "err", err)
+		writeAuditFailed(w)
+		return
+	}
+	if err != nil {
 		s.logger.Error("login: criar sessão", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
 		return
@@ -95,6 +110,30 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:          expiresAt.UTC(),
 		MustChangePassword: user.TempPasswordExpiresAt != nil,
 	})
+}
+
+// loginEvent é o evento de um login. Só identifica o usuário se o e-mail
+// corresponder a um usuário existente: o texto digitado não é guardado
+// (pode ser uma senha digitada no campo errado).
+func loginEvent(r *http.Request, s *server, user store.User, result string) store.AuditEvent {
+	e := s.event(r, "auth.login", result)
+	e.UserID, e.UserEmail = user.ID, ""
+	if user.ID != "" {
+		e.UserEmail = user.Email
+	}
+	return e
+}
+
+// recordLogin registra uma tentativa bloqueada pelo limite, identificando
+// o usuário só se o e-mail existir.
+func (s *server) recordLogin(r *http.Request, email string, emailErr error, result string) {
+	var user store.User
+	if emailErr == nil {
+		if u, err := s.store.UserByEmail(r.Context(), email); err == nil {
+			user = u
+		}
+	}
+	s.recordDenied(r, loginEvent(r, s, user, result))
 }
 
 // checkPassword busca o usuário e confere a senha. Para e-mail inválido ou
@@ -137,6 +176,11 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
 		return
 	}
+	// Exceção à falha fechada (decisão 7): o logout tira acesso, então a
+	// sessão é revogada mesmo que o registro falhe.
+	if err := s.store.InsertAudit(r.Context(), s.event(r, "auth.logout", store.AuditSuccess)); err != nil {
+		s.logger.Error("auditoria: registrar logout (a sessão foi revogada mesmo assim)", "err", err)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -175,6 +219,7 @@ func (s *server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	ok, err := auth.VerifyPassword(sess.user.PasswordHash, current)
 	if err != nil || !ok {
 		s.limiter.Failure(key)
+		s.recordDenied(r, s.event(r, "auth.password_change", store.AuditFailure))
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "senha atual incorreta")
 		return
 	}
@@ -187,7 +232,18 @@ func (s *server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.ChangePassword(r.Context(), sess.user.ID, auth.HashPassword(next), sess.tokenHash); err != nil {
+	err = s.store.InTx(r.Context(), func(tx Store) error {
+		if err := tx.ChangePassword(r.Context(), sess.user.ID, auth.HashPassword(next), sess.tokenHash); err != nil {
+			return err
+		}
+		return auditErr(tx.InsertAudit(r.Context(), s.event(r, "auth.password_change", store.AuditSuccess)))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar troca de senha", "err", err)
+		writeAuditFailed(w)
+		return
+	}
+	if err != nil {
 		s.logger.Error("trocar senha", "user_id", sess.user.ID, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
 		return

@@ -74,7 +74,21 @@ func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.store.CreateProject(r.Context(), req.Name)
+	var p store.Project
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		var err error
+		if p, err = tx.CreateProject(r.Context(), req.Name); err != nil {
+			return err
+		}
+		e := s.event(r, "project.create", store.AuditSuccess)
+		e.ProjectID, e.ProjectName = p.ID, p.Name
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar criação de projeto", "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	if errors.Is(err, store.ErrConflict) {
 		writeError(w, http.StatusConflict, "project_exists", "já existe um projeto com esse nome")
 		return
@@ -95,8 +109,19 @@ func (s *server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("project")
 
-	err := s.store.DeleteProject(r.Context(), name)
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		if err := tx.DeleteProject(r.Context(), name); err != nil {
+			return err
+		}
+		e := s.event(r, "project.delete", store.AuditSuccess)
+		e.ProjectName = name
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
 	switch {
+	case errors.Is(err, errAudit):
+		s.logger.Error("auditoria: registrar remoção de projeto", "err", err)
+		writeAuditFailed(w)
+		return
 	case errors.Is(err, store.ErrNotFound):
 		writeProjectNotFound(w)
 		return

@@ -184,7 +184,21 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("delete repetido: código %d, stderr %q; quero 1 e 404 project_not_found", code, stderr)
 	}
 
-	// 8. Logout: revoga a sessão no servidor (o token antigo deixa de valer
+	// 8. Auditoria: cada run deixou uma linha por segredo entregue, com a
+	// versão e o e-mail de quem rodou; nenhum valor aparece.
+	resp := request(t, hc, http.MethodGet, url+"/v1/audit?project=demo&limit=1000", "")
+	wantStatus(t, "GET /audit", http.StatusOK, resp)
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), value) {
+		t.Fatal("a auditoria contém o valor do segredo")
+	}
+	for _, want := range []string{`"action":"secret.run"`, `"secret_key":"DB_PASSWORD"`, `"secret_version":1`, `"user_email":"` + email + `"`, `"action":"secret.write"`} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("a auditoria deveria conter %s", want)
+		}
+	}
+
+	// 9. Logout: revoga a sessão no servidor (o token antigo deixa de valer
 	// na hora) e apaga o arquivo; sem sessão, o CLI pede login.
 	runEnvmem(t, "logout", "--servidor", url, "--ca", ca)
 	wantStatus(t, "token depois do logout", http.StatusUnauthorized,

@@ -76,7 +76,20 @@ func (s *server) handleSetMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.SetMember(r.Context(), access.project.ID, user.ID, req.Role); err != nil {
+	err = s.store.InTx(r.Context(), func(tx Store) error {
+		if err := tx.SetMember(r.Context(), access.project.ID, user.ID, req.Role); err != nil {
+			return err
+		}
+		e := s.event(r, "member.set", store.AuditSuccess)
+		e.TargetUserID, e.TargetEmail, e.Role = user.ID, user.Email, req.Role
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar membro", "err", err)
+		writeAuditFailed(w)
+		return
+	}
+	if err != nil {
 		s.logger.Error("gravar membro", "project", access.project.Name, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
 		return
@@ -92,7 +105,22 @@ func (s *server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	if !s.canChangeMember(w, r, access, userID, "") {
 		return
 	}
-	err := s.store.RemoveMember(r.Context(), access.project.ID, userID)
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		if err := tx.RemoveMember(r.Context(), access.project.ID, userID); err != nil {
+			return err
+		}
+		e := s.event(r, "member.remove", store.AuditSuccess)
+		e.TargetUserID = userID
+		if u, err := tx.UserByID(r.Context(), userID); err == nil {
+			e.TargetEmail = u.Email
+		}
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar remoção de membro", "err", err)
+		writeAuditFailed(w)
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "member_not_found", "o usuário não é membro deste projeto")
 		return
