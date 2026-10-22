@@ -62,6 +62,23 @@ type SecretRow struct {
 	WrappedDEK []byte // DEK cifrada com a chave-mestra
 	DEKNonce   []byte // nonce da cifragem da DEK
 	CreatedAt  time.Time
+	DeletedAt  *time.Time // preenchido: na lixeira (decisão 11)
+}
+
+// SecretMeta descreve um segredo sem o valor: a chave, a versão atual,
+// quantas versões estão guardadas e quando a atual foi gravada.
+type SecretMeta struct {
+	Key       string
+	Version   int
+	Versions  int
+	UpdatedAt time.Time
+}
+
+// TrashedSecret é um segredo na lixeira (decisão 11).
+type TrashedSecret struct {
+	Key       string
+	Version   int // última versão antes de ir para a lixeira
+	DeletedAt time.Time
 }
 
 // VaultMeta é o valor de verificação do unseal (cifrado com a chave-mestra).

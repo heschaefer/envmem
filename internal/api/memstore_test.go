@@ -220,7 +220,20 @@ func (m *memStore) InsertSecretVersion(ctx context.Context, row store.SecretRow)
 			row.Version = r.Version + 1
 		}
 	}
+	row.CreatedAt = m.now()
 	m.secrets = append(m.secrets, row)
+	// Como o store real: sai da lixeira e guarda só as últimas versões.
+	var kept []store.SecretRow
+	for _, r := range m.secrets {
+		if r.ProjectID == row.ProjectID && r.Key == row.Key {
+			if r.Version <= row.Version-store.SecretRetention {
+				continue
+			}
+			r.DeletedAt = nil
+		}
+		kept = append(kept, r)
+	}
+	m.secrets = kept
 	return row.Version, nil
 }
 
@@ -229,7 +242,7 @@ func (m *memStore) LatestSecrets(ctx context.Context, projectID string) ([]store
 	defer m.mu.Unlock()
 	latest := map[string]store.SecretRow{}
 	for _, r := range m.secrets {
-		if r.ProjectID == projectID && r.Version > latest[r.Key].Version {
+		if r.ProjectID == projectID && r.DeletedAt == nil && r.Version > latest[r.Key].Version {
 			latest[r.Key] = r
 		}
 	}
@@ -325,4 +338,95 @@ func (m *memStore) ResetPassword(ctx context.Context, id, passwordHash string, t
 		}
 	}
 	return store.ErrNotFound
+}
+
+func (m *memStore) SecretVersion(ctx context.Context, projectID, key string, version int) (store.SecretRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best store.SecretRow
+	for _, r := range m.secrets {
+		if r.ProjectID == projectID && r.Key == key && r.DeletedAt == nil &&
+			(version == 0 && r.Version > best.Version || r.Version == version) {
+			best = r
+		}
+	}
+	if best.Version == 0 {
+		return store.SecretRow{}, store.ErrNotFound
+	}
+	return best, nil
+}
+
+func (m *memStore) SecretsMeta(ctx context.Context, projectID string) ([]store.SecretMeta, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	byKey := map[string]*store.SecretMeta{}
+	for _, r := range m.secrets {
+		if r.ProjectID != projectID || r.DeletedAt != nil {
+			continue
+		}
+		meta := byKey[r.Key]
+		if meta == nil {
+			meta = &store.SecretMeta{Key: r.Key}
+			byKey[r.Key] = meta
+		}
+		meta.Versions++
+		if r.Version > meta.Version {
+			meta.Version, meta.UpdatedAt = r.Version, r.CreatedAt
+		}
+	}
+	out := make([]store.SecretMeta, 0, len(byKey))
+	for _, meta := range byKey {
+		out = append(out, *meta)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+// trashOp aplica f às versões de (projeto, chave) com o estado de lixeira
+// indicado e devolve a maior versão afetada, ou ErrNotFound.
+func (m *memStore) trashOp(projectID, key string, inTrash bool, f func(i int)) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	maxV := 0
+	for i := len(m.secrets) - 1; i >= 0; i-- {
+		r := m.secrets[i]
+		if r.ProjectID == projectID && r.Key == key && (r.DeletedAt != nil) == inTrash {
+			maxV = max(maxV, r.Version)
+			f(i)
+		}
+	}
+	if maxV == 0 {
+		return 0, store.ErrNotFound
+	}
+	return maxV, nil
+}
+
+func (m *memStore) TrashSecret(ctx context.Context, projectID, key string) (int, error) {
+	now := m.now()
+	return m.trashOp(projectID, key, false, func(i int) { m.secrets[i].DeletedAt = &now })
+}
+
+func (m *memStore) RestoreSecret(ctx context.Context, projectID, key string) (int, error) {
+	return m.trashOp(projectID, key, true, func(i int) { m.secrets[i].DeletedAt = nil })
+}
+
+func (m *memStore) PurgeSecret(ctx context.Context, projectID, key string) (int, error) {
+	return m.trashOp(projectID, key, true, func(i int) { m.secrets = append(m.secrets[:i], m.secrets[i+1:]...) })
+}
+
+func (m *memStore) ListTrash(ctx context.Context, projectID string) ([]store.TrashedSecret, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	byKey := map[string]store.TrashedSecret{}
+	for _, r := range m.secrets {
+		if r.ProjectID == projectID && r.DeletedAt != nil && r.Version > byKey[r.Key].Version {
+			byKey[r.Key] = store.TrashedSecret{Key: r.Key, Version: r.Version, DeletedAt: *r.DeletedAt}
+		}
+	}
+	out := make([]store.TrashedSecret, 0, len(byKey))
+	for _, t := range byKey {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
 }

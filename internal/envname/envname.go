@@ -46,6 +46,7 @@ var blockedPrefixes = []string{
 	"DYLD_",       // carregador dinâmico do macOS
 	"GIT_",        // GIT_SSH_COMMAND, GIT_EXEC_PATH, GIT_CONFIG_*...
 	"NPM_CONFIG_", // npm_config_script_shell e similares
+	"ENVMEM_",     // do próprio envmem; o run as descarta do ambiente da aplicação
 }
 
 // Check devolve nil se name pode ser usado como nome de segredo. O erro

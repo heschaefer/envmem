@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/heschaefer/envmem/internal/store"
 
 	"github.com/heschaefer/envmem/internal/vault"
 )
@@ -145,4 +148,130 @@ func TestLogsDoNotContainSecretValues(t *testing.T) {
 	if strings.Contains(e.logs.String(), "valor-que-nao-pode-vazar") {
 		t.Fatal("log contém o valor do segredo")
 	}
+}
+
+func TestSecretMetaAndSingleGet(t *testing.T) {
+	e := openEnv(t)
+	e.put(t, "demo", "DB_PASSWORD", "versao-um")
+	e.put(t, "demo", "DB_PASSWORD", "versao-dois")
+
+	rec := e.do(t, http.MethodGet, secretPath+"/meta", "")
+	if strings.Contains(rec.Body.String(), "versao-") {
+		t.Fatalf("meta expõe valores: %s", rec.Body.String())
+	}
+	meta := decode[secretsMetaResponse](t, rec).Secrets
+	if len(meta) != 1 || meta[0].Key != "DB_PASSWORD" || meta[0].Version != 2 || meta[0].Versions != 2 {
+		t.Fatalf("meta = %+v", meta)
+	}
+
+	if got := decode[secretResponse](t, e.do(t, http.MethodGet, secretPath+"/DB_PASSWORD", "")); got.Value != "versao-dois" || got.Version != 2 {
+		t.Errorf("atual = %+v", got)
+	}
+	if got := decode[secretResponse](t, e.do(t, http.MethodGet, secretPath+"/DB_PASSWORD?version=1", "")); got.Value != "versao-um" {
+		t.Errorf("versão 1 = %+v", got)
+	}
+	wantError(t, e.do(t, http.MethodGet, secretPath+"/DB_PASSWORD?version=9", ""), http.StatusNotFound, "secret_not_found")
+	wantError(t, e.do(t, http.MethodGet, secretPath+"/DB_PASSWORD?version=abc", ""), http.StatusBadRequest, "invalid_version")
+	wantError(t, e.do(t, http.MethodGet, secretPath+"/NAO_EXISTE", ""), http.StatusNotFound, "secret_not_found")
+
+	// Selado: o valor não sai, mas os nomes sim (nada é decifrado).
+	e.vault.Seal()
+	wantError(t, e.do(t, http.MethodGet, secretPath+"/DB_PASSWORD", ""), http.StatusServiceUnavailable, "sealed")
+	if rec := e.do(t, http.MethodGet, secretPath+"/meta", ""); rec.Code != http.StatusOK {
+		t.Errorf("meta com o cofre selado: %d", rec.Code)
+	}
+}
+
+func runValues(t *testing.T, e *testEnv) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, it := range decode[listSecretsResponse](t, e.do(t, http.MethodGet, secretPath, "")).Secrets {
+		out[it.Key] = it.Value
+	}
+	return out
+}
+
+func TestTrash(t *testing.T) {
+	e := openEnv(t)
+	e.put(t, "demo", "DB_PASSWORD", "vazada")
+	e.put(t, "demo", "API_KEY", "a")
+	path := secretPath + "/DB_PASSWORD"
+
+	// Remover manda para a lixeira: some do run e da listagem de nomes.
+	if rec := e.do(t, http.MethodDelete, path, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("lixeira: %d %s", rec.Code, rec.Body.String())
+	}
+	if v := runValues(t, e); len(v) != 1 || v["API_KEY"] != "a" {
+		t.Fatalf("run depois da lixeira = %v", v)
+	}
+	wantError(t, e.do(t, http.MethodDelete, path, ""), http.StatusNotFound, "secret_not_found")
+	trash := decode[trashResponse](t, e.do(t, http.MethodGet, "/v1/projects/demo/trash", "")).Trash
+	if len(trash) != 1 || trash[0].Key != "DB_PASSWORD" || trash[0].Version != 1 {
+		t.Fatalf("lixeira = %+v", trash)
+	}
+
+	// Restaurar devolve o segredo.
+	if rec := e.do(t, http.MethodPost, path+"/restore", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("restaurar: %d", rec.Code)
+	}
+	if v := runValues(t, e); v["DB_PASSWORD"] != "vazada" {
+		t.Fatalf("depois de restaurar = %v", v)
+	}
+	wantError(t, e.do(t, http.MethodPost, path+"/restore", ""), http.StatusNotFound, "not_in_trash")
+
+	// PUT numa chave da lixeira grava a versão seguinte e a tira de lá; o
+	// valor antigo nunca volta ao run.
+	e.do(t, http.MethodDelete, path, "")
+	rec := e.put(t, "demo", "DB_PASSWORD", "nova")
+	if got := decode[putSecretResponse](t, rec); got.Version != 2 {
+		t.Fatalf("versão depois da lixeira = %d, quero 2", got.Version)
+	}
+	if v := runValues(t, e); v["DB_PASSWORD"] != "nova" {
+		t.Fatalf("run depois do PUT = %v", v)
+	}
+	if trash := decode[trashResponse](t, e.do(t, http.MethodGet, "/v1/projects/demo/trash", "")).Trash; len(trash) != 0 {
+		t.Fatalf("lixeira deveria estar vazia: %+v", trash)
+	}
+}
+
+// Exclusão definitiva só do que está na lixeira; com a lixeira vazia, o
+// projeto pode ser apagado (decisão 30).
+func TestPurgeAndDeleteProject(t *testing.T) {
+	e := openEnv(t)
+	e.put(t, "demo", "DB_PASSWORD", "x")
+
+	wantError(t, e.do(t, http.MethodDelete, "/v1/projects/demo/trash/DB_PASSWORD", ""), http.StatusNotFound, "not_in_trash")
+	e.do(t, http.MethodDelete, secretPath+"/DB_PASSWORD", "")
+	// Na lixeira, o segredo ainda está no banco: o projeto não pode sair.
+	wantError(t, e.do(t, http.MethodDelete, "/v1/projects/demo", ""), http.StatusConflict, "project_not_empty")
+
+	if rec := e.do(t, http.MethodDelete, "/v1/projects/demo/trash/DB_PASSWORD", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("exclusão definitiva: %d %s", rec.Code, rec.Body.String())
+	}
+	wantError(t, e.do(t, http.MethodPost, secretPath+"/DB_PASSWORD/restore", ""), http.StatusNotFound, "not_in_trash")
+	if rec := e.do(t, http.MethodDelete, "/v1/projects/demo", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("apagar projeto vazio: %d", rec.Code)
+	}
+}
+
+// Ficam só as 10 versões mais recentes (decisão 11).
+func TestRetention(t *testing.T) {
+	e := openEnv(t)
+	for i := 1; i <= store.SecretRetention+2; i++ {
+		e.put(t, "demo", "K", "v"+strconv.Itoa(i))
+	}
+	meta := decode[secretsMetaResponse](t, e.do(t, http.MethodGet, secretPath+"/meta", "")).Secrets
+	if meta[0].Version != 12 || meta[0].Versions != store.SecretRetention {
+		t.Fatalf("meta = %+v, quero versão 12 com 10 guardadas", meta[0])
+	}
+	wantError(t, e.do(t, http.MethodGet, secretPath+"/K?version=2", ""), http.StatusNotFound, "secret_not_found")
+	if got := decode[secretResponse](t, e.do(t, http.MethodGet, secretPath+"/K?version=3", "")); got.Value != "v3" {
+		t.Fatalf("versão 3 = %+v", got)
+	}
+}
+
+func TestPutRejectsReservedNames(t *testing.T) {
+	e := openEnv(t)
+	wantError(t, e.put(t, "demo", "meta", "x"), http.StatusBadRequest, "invalid_key_name")
+	wantError(t, e.put(t, "demo", "ENVMEM_TOKEN", "x"), http.StatusBadRequest, "invalid_key_name")
 }

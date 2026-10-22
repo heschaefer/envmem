@@ -146,7 +146,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 
 **Contexto:** algumas variáveis de ambiente mudam o binário executado ou fazem o processo executar código, como `PATH`, `LD_PRELOAD` e `NODE_OPTIONS`. Um segredo com um desses nomes, gravado por engano ou por alguém com acesso de escrita, executaria código na máquina de quem roda o `run`.
 
-**Decisão:** o pacote `internal/envname` confere os nomes: formato POSIX (letras, dígitos e `_`, sem começar por dígito) e uma lista de nomes e prefixos bloqueados (`PATH`, `IFS`, `BASH_ENV`, `LD_*`, `DYLD_*`, `GIT_*`, `NODE_OPTIONS`, `PYTHONPATH`, `JAVA_TOOL_OPTIONS`, entre outros). O servidor confere no `PUT`, e o CLI confere de novo antes de injetar. O CLI também recusa valores com byte nulo, que o `execve` não aceita.
+**Decisão:** o pacote `internal/envname` confere os nomes: formato POSIX (letras, dígitos e `_`, sem começar por dígito) e uma lista de nomes e prefixos bloqueados (`PATH`, `IFS`, `BASH_ENV`, `LD_*`, `DYLD_*`, `GIT_*`, `NODE_OPTIONS`, `PYTHONPATH`, `JAVA_TOOL_OPTIONS`, entre outros). Na Fatia 4, entrou o prefixo `ENVMEM_*`: o `run` descarta essas variáveis do ambiente da aplicação (decisão 4), e um segredo com esse prefixo seria injetado depois do descarte. O servidor confere no `PUT`, e o CLI confere de novo antes de injetar. O CLI também recusa valores com byte nulo, que o `execve` não aceita.
 
 **Consequências:** é uma camada adicional, não uma barreira completa: a lista não cobre toda variável que algum programa possa interpretar. Se um nome bloqueado chegar ao CLI, nada é executado.
 
