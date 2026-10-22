@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/heschaefer/envmem/internal/auth"
 	"github.com/heschaefer/envmem/internal/store"
 	"github.com/heschaefer/envmem/internal/vault"
 )
@@ -20,24 +21,52 @@ type Store interface {
 	ProjectByName(ctx context.Context, name string) (store.Project, error)
 	ListProjects(ctx context.Context) ([]store.Project, error)
 	DeleteProject(ctx context.Context, name string) error
+	UserByEmail(ctx context.Context, email string) (store.User, error)
+	CreateSession(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error
+	UserBySession(ctx context.Context, tokenHash []byte) (store.User, error)
+	DeleteSession(ctx context.Context, tokenHash []byte) error
+	ChangePassword(ctx context.Context, userID, passwordHash string, keepTokenHash []byte) error
 	LatestSecrets(ctx context.Context, projectID string) ([]store.SecretRow, error)
 	InsertSecretVersion(ctx context.Context, row store.SecretRow) (int, error)
 }
 
+// maxConcurrentHashes limita quantas conferências de senha (argon2id, 19
+// MiB cada) rodam ao mesmo tempo.
+const maxConcurrentHashes = 4
+
 // server reúne as dependências dos handlers.
 type server struct {
-	logger *slog.Logger
-	store  Store
-	vault  *vault.Vault
+	logger    *slog.Logger
+	store     Store
+	vault     *vault.Vault
+	limiter   *auth.Limiter
+	hashSlots chan struct{}
+	now       func() time.Time
 }
 
 // NewRouter monta as rotas da API, com log de cada requisição.
 func NewRouter(logger *slog.Logger, st Store, v *vault.Vault) http.Handler {
-	s := &server{logger: logger, store: st, vault: v}
+	return newRouter(logger, st, v, time.Now)
+}
+
+// newRouter é o NewRouter com o relógio como parâmetro, para os testes.
+func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Time) http.Handler {
+	s := &server{
+		logger:    logger,
+		store:     st,
+		vault:     v,
+		limiter:   auth.NewLimiter(auth.LoginMaxFailures, auth.LoginBlock, now),
+		hashSlots: make(chan struct{}, maxConcurrentHashes),
+		now:       now,
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST /v1/unseal", s.handleUnseal)
+	mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /v1/auth/logout", s.requireAuth(s.handleLogout))
+	mux.HandleFunc("GET /v1/auth/me", s.requireAuth(s.handleMe))
+	mux.HandleFunc("POST /v1/auth/password", s.requireAuth(s.handleChangePassword))
 	mux.HandleFunc("GET /v1/projects", s.handleListProjects)
 	mux.HandleFunc("POST /v1/projects", s.handleCreateProject)
 	mux.HandleFunc("DELETE /v1/projects/{project}", s.handleDeleteProject)

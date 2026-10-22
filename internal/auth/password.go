@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -88,6 +89,22 @@ func VerifyPassword(encoded string, password []byte) (bool, error) {
 	// variaria conforme o primeiro byte diferente, e um atacante poderia
 	// usar essa diferença para descobrir o hash aos poucos.
 	return subtle.ConstantTimeCompare(key, p.key) == 1, nil
+}
+
+// dummyHash é o hash de uma senha aleatória, calculado uma vez. O login
+// com e-mail inexistente confere a senha contra ele: assim a resposta leva
+// o mesmo tempo de um e-mail que existe, e o tempo não revela quais
+// e-mails estão cadastrados.
+var dummyHash = sync.OnceValue(func() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return HashPassword(b)
+})
+
+// VerifyDummy gasta o mesmo tempo de VerifyPassword e sempre devolve false.
+func VerifyDummy(password []byte) bool {
+	VerifyPassword(dummyHash(), password)
+	return false
 }
 
 type hashParams struct {

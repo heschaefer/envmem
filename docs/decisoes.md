@@ -432,9 +432,9 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 **Contexto:** o argon2id deixa cada tentativa de senha lenta, mas não limita quantas tentativas são feitas. Cada tentativa também aloca 19 MiB, então muitas tentativas simultâneas esgotariam a memória do servidor. Bloquear a conta depois de algumas falhas permitiria que qualquer pessoa bloqueasse a conta dos outros de propósito.
 
-**Decisão:** o servidor limita as tentativas de login em memória, por conta e por IP de origem. Acima do limite, responde 429 com `Retry-After`, sem bloquear a conta. Os valores exatos do limite ficam para a implementação.
+**Decisão:** o servidor limita as tentativas de login em memória, por conta e por IP de origem. Acima do limite, responde 429 com `Retry-After`, sem bloquear a conta. Números decididos em 22/10/2026: depois de 10 falhas seguidas, novas tentativas esperam 5 minutos; o contador também zera depois de 5 minutos sem falha. Detalhes de implementação (Fatia 4, passo 3): um login certo zera só o contador da conta, não o do IP; a troca de senha também conta falhas da senha atual; o IP é o da conexão (cabeçalhos como `X-Forwarded-For` são ignorados, porque qualquer cliente pode inventá-los); e no máximo 4 conferências de senha rodam ao mesmo tempo.
 
-**Consequências:** a adivinhação de senhas fica lenta e a memória do servidor fica protegida, sem que um atacante consiga deixar a conta de alguém indisponível por tempo indeterminado. Os contadores zeram quando o servidor reinicia, e o limite por IP perde força quando muitos usuários saem pelo mesmo endereço. As falhas continuam registradas na auditoria (decisão 7).
+**Consequências:** a adivinhação de senhas fica lenta e a memória do servidor fica protegida, sem que um atacante consiga deixar a conta de alguém indisponível por tempo indeterminado. Os contadores zeram quando o servidor reinicia, e o limite por IP perde força quando muitos usuários saem pelo mesmo endereço. As falhas continuam registradas na auditoria (decisão 7). Zerar o contador do IP num login certo permitiria a um atacante com conta própria intercalar logins válidos e nunca atingir o limite por IP enquanto testa senhas de outras contas. O limite de conferências simultâneas protege a memória contra uma rajada de logins vindos de muitos IPs, que o contador sozinho não impede. Atrás de um proxy, todos os clientes aparecem com o IP do proxy e dividem o mesmo contador.
 
 ### 11. Lixeira de segredos, exclusão definitiva por admin e retenção de 10 versões
 
@@ -456,7 +456,7 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 **Contexto:** não havia fluxo para quem esquece a senha. Um "esqueci minha senha" por e-mail exigiria um servidor de e-mail; remover e recriar o usuário perderia as participações em projetos e deixaria dois ids para a mesma pessoa na auditoria.
 
-**Decisão:** o superadmin define uma nova senha temporária para o usuário, com o mesmo mecanismo da decisão 43 (troca obrigatória e validade de 72 horas). Na mesma operação, as sessões abertas do usuário são revogadas.
+**Decisão:** o superadmin define uma nova senha temporária para o usuário, com o mesmo mecanismo da decisão 43 (troca obrigatória e validade de 72 horas). Na mesma operação, as sessões abertas do usuário são revogadas. Pelo mesmo motivo, quando o próprio usuário troca a senha (o que exige a senha atual), as outras sessões dele são revogadas e só a atual continua.
 
 **Consequências:** não há mecanismo novo para explicar: é o fluxo da primeira senha aplicado de novo. Revogar as sessões garante que, se a senha foi trocada por suspeita de vazamento, quem estava usando a conta perde o acesso na hora. A tabela de papéis ganha a linha "resetar a senha de um usuário: superadmin". Fica em aberto o caso de um único superadmin que esquece a própria senha, que não tem quem o resete.
 
