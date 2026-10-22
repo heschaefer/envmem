@@ -21,6 +21,10 @@ func run(args []string) int {
 	}
 
 	switch args[0] {
+	case "login":
+		return cmdLogin(args[1:])
+	case "logout":
+		return cmdLogout(args[1:])
 	case "run":
 		return cmdRun(args[1:])
 	case "projects":
@@ -39,11 +43,14 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `Uso: envmem <subcomando> [opções]
 
 Subcomandos:
+  login      abre uma sessão no servidor (pede a senha)
+  logout     encerra a sessão e apaga o token deste computador
   run        executa um comando com os segredos do projeto no ambiente
   projects   lista, cria e remove projetos
   help       mostra esta ajuda
 
 Exemplos:
+  envmem login --servidor https://localhost:8080 --ca certs/ca.crt voce@empresa.com
   envmem projects create demo
   envmem run --projeto demo -- sh -c 'echo $DB_PASSWORD'
 `)

@@ -1,6 +1,6 @@
 # Roteiro da demonstração: Fatia 3 (projetos + TLS 1.3)
 
-> Desde a Fatia 4 (decisão 42), o servidor não migra sozinho: rode `make migrate` antes de subir o servidor. `DATABASE_URL` passou a ser o usuário restrito `envmem_app`, então o comando de recomeçar do zero abaixo precisa trocar `DATABASE_URL` por `DATABASE_MIGRATE_URL`.
+> Desde a Fatia 4 (decisão 42), o servidor não migra sozinho: rode `make migrate` antes de subir o servidor. `DATABASE_URL` passou a ser o usuário restrito `envmem_app`, então o comando de recomeçar do zero abaixo precisa trocar `DATABASE_URL` por `DATABASE_MIGRATE_URL`. Também desde a Fatia 4, as rotas (exceto `/health`, `/unseal` e `/auth/login`) exigem sessão: crie o primeiro superadmin com `./bin/envmem-server create-superadmin EMAIL`, rode `./bin/envmem login $C EMAIL` e, nos comandos com `curl`, acrescente `-H "Authorization: Bearer $(cat ~/.config/envmem/token)"`.
 
 Tudo roda no terminal do dev container. São dois terminais: um para o servidor e outro para os comandos.
 

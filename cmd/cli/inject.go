@@ -33,7 +33,8 @@ func execWithSecrets(command []string, secrets []client.Secret, verbose bool) er
 }
 
 // buildEnv devolve base mais os segredos, no formato "CHAVE=valor". Um
-// segredo substitui a variável de mesmo nome que já exista em base.
+// segredo substitui a variável de mesmo nome que já exista em base, e as
+// variáveis ENVMEM_* de base são descartadas.
 func buildEnv(base []string, secrets []client.Secret) ([]string, error) {
 	replaced := make(map[string]bool, len(secrets))
 	for _, s := range secrets {
@@ -55,9 +56,13 @@ func buildEnv(base []string, secrets []client.Secret) ([]string, error) {
 	env := make([]string, 0, len(base)+len(secrets))
 	for _, kv := range base {
 		name, _, _ := strings.Cut(kv, "=")
-		if !replaced[name] {
-			env = append(env, kv)
+		// Variáveis ENVMEM_* são do próprio envmem e não seguem para a
+		// aplicação: nenhuma credencial de acesso do envmem deve chegar a
+		// ela junto com os segredos (decisão 4).
+		if replaced[name] || strings.HasPrefix(name, "ENVMEM_") {
+			continue
 		}
+		env = append(env, kv)
 	}
 	for _, s := range secrets {
 		env = append(env, s.Key+"="+s.Value)

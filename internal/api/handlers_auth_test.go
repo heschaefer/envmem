@@ -31,8 +31,8 @@ func (e *testEnv) login(t *testing.T, email, password string) *httptest.Response
 	return e.do(t, http.MethodPost, "/v1/auth/login", `{"email":"`+email+`","password":"`+password+`"}`)
 }
 
-// token faz login e devolve o token, falhando o teste se não conseguir.
-func (e *testEnv) token(t *testing.T, email, password string) string {
+// tokenFor faz login e devolve o token, falhando o teste se não conseguir.
+func (e *testEnv) tokenFor(t *testing.T, email, password string) string {
 	t.Helper()
 	rec := e.login(t, email, password)
 	if rec.Code != http.StatusOK {
@@ -67,7 +67,7 @@ func TestLoginAndMe(t *testing.T) {
 func TestRequireAuth(t *testing.T) {
 	e := newTestEnv(t)
 	e.addUser(t, "dev@empresa.com", testPassword, 0)
-	token := e.token(t, "dev@empresa.com", testPassword)
+	token := e.tokenFor(t, "dev@empresa.com", testPassword)
 
 	for name, tok := range map[string]string{
 		"sem token":        "",
@@ -84,7 +84,7 @@ func TestRequireAuth(t *testing.T) {
 	}
 
 	// O token na URL não é aceito: só no cabeçalho.
-	wantError(t, e.do(t, http.MethodGet, "/v1/auth/me?token="+token, ""), http.StatusUnauthorized, "unauthorized")
+	wantError(t, e.doAs(t, "", http.MethodGet, "/v1/auth/me?token="+token, ""), http.StatusUnauthorized, "unauthorized")
 
 	// A sessão vale 8 horas, contadas do login.
 	e.clock.add(auth.SessionTTL - time.Second)
@@ -150,7 +150,7 @@ func TestLoginSuccessDoesNotResetIPCounter(t *testing.T) {
 	for i := range auth.LoginMaxFailures {
 		e.login(t, "vitima@empresa.com", "chute numero "+strconv.Itoa(i)+" longo")
 		if i < auth.LoginMaxFailures-1 {
-			e.token(t, "atacante@empresa.com", testPassword)
+			e.tokenFor(t, "atacante@empresa.com", testPassword)
 		}
 	}
 	wantError(t, e.login(t, "atacante@empresa.com", testPassword), http.StatusTooManyRequests, "too_many_attempts")
@@ -159,8 +159,8 @@ func TestLoginSuccessDoesNotResetIPCounter(t *testing.T) {
 func TestLogout(t *testing.T) {
 	e := newTestEnv(t)
 	e.addUser(t, "dev@empresa.com", testPassword, 0)
-	token := e.token(t, "dev@empresa.com", testPassword)
-	other := e.token(t, "dev@empresa.com", testPassword)
+	token := e.tokenFor(t, "dev@empresa.com", testPassword)
+	other := e.tokenFor(t, "dev@empresa.com", testPassword)
 
 	if rec := e.doAs(t, token, http.MethodPost, "/v1/auth/logout", ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("logout: %d", rec.Code)
@@ -191,8 +191,8 @@ func TestTempPassword(t *testing.T) {
 func TestChangePassword(t *testing.T) {
 	e := newTestEnv(t)
 	e.addUser(t, "novo@empresa.com", testPassword, 72*time.Hour)
-	token := e.token(t, "novo@empresa.com", testPassword)
-	other := e.token(t, "novo@empresa.com", testPassword)
+	token := e.tokenFor(t, "novo@empresa.com", testPassword)
+	other := e.tokenFor(t, "novo@empresa.com", testPassword)
 
 	change := func(current, next string) *httptest.ResponseRecorder {
 		return e.doAs(t, token, http.MethodPost, "/v1/auth/password",
@@ -222,7 +222,7 @@ func TestChangePassword(t *testing.T) {
 func TestAuthLogsDoNotLeak(t *testing.T) {
 	e := newTestEnv(t)
 	e.addUser(t, "dev@empresa.com", testPassword, 0)
-	token := e.token(t, "dev@empresa.com", testPassword)
+	token := e.tokenFor(t, "dev@empresa.com", testPassword)
 	e.login(t, "dev@empresa.com", "senha errada mas longa")
 	e.doAs(t, token, http.MethodGet, "/v1/auth/me", "")
 
@@ -230,5 +230,46 @@ func TestAuthLogsDoNotLeak(t *testing.T) {
 		if strings.Contains(e.logs.String(), s) {
 			t.Fatalf("o log contém %q", s)
 		}
+	}
+}
+
+// Fora a lista de rotas públicas, tudo exige sessão.
+func TestPrivateRoutesRequireSession(t *testing.T) {
+	e := openEnv(t)
+	for _, r := range []struct{ method, path string }{
+		{http.MethodGet, "/v1/projects"},
+		{http.MethodPost, "/v1/projects"},
+		{http.MethodDelete, "/v1/projects/demo"},
+		{http.MethodGet, "/v1/projects/demo/secrets"},
+		{http.MethodPut, "/v1/projects/demo/secrets/K"},
+		{http.MethodPost, "/v1/auth/logout"},
+		{http.MethodGet, "/v1/auth/me"},
+		{http.MethodPost, "/v1/auth/password"},
+	} {
+		wantError(t, e.doAs(t, "", r.method, r.path, `{}`), http.StatusUnauthorized, "unauthorized")
+	}
+	for _, path := range []string{"/v1/health"} {
+		if rec := e.doAs(t, "", http.MethodGet, path, ""); rec.Code != http.StatusOK {
+			t.Errorf("%s sem token: %d, quero 200 (rota pública)", path, rec.Code)
+		}
+	}
+}
+
+// Com senha temporária, a sessão só troca a senha, consulta o me e sai.
+func TestTempPasswordSessionIsRestricted(t *testing.T) {
+	e := openEnv(t)
+	e.addUser(t, "novo@empresa.com", testPassword, 72*time.Hour)
+	token := e.tokenFor(t, "novo@empresa.com", testPassword)
+
+	wantError(t, e.doAs(t, token, http.MethodGet, "/v1/projects", ""), http.StatusForbidden, "password_change_required")
+	wantError(t, e.doAs(t, token, http.MethodGet, secretPath, ""), http.StatusForbidden, "password_change_required")
+	if rec := e.doAs(t, token, http.MethodGet, "/v1/auth/me", ""); rec.Code != http.StatusOK {
+		t.Fatalf("me com senha temporária: %d", rec.Code)
+	}
+
+	e.doAs(t, token, http.MethodPost, "/v1/auth/password",
+		`{"current_password":"`+testPassword+`","new_password":"nova senha bem longa"}`)
+	if rec := e.doAs(t, token, http.MethodGet, "/v1/projects", ""); rec.Code != http.StatusOK {
+		t.Fatalf("depois da troca: %d %s", rec.Code, rec.Body.String())
 	}
 }

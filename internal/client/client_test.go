@@ -290,3 +290,44 @@ func TestProjects(t *testing.T) {
 		t.Fatal("esperava erro para projeto vazio")
 	}
 }
+
+// O token vai no cabeçalho Authorization, e só depois de SetToken.
+func TestTokenHeader(t *testing.T) {
+	var got []string
+	_, c := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		if strings.Contains(r.URL.String(), "tok") {
+			t.Error("o token apareceu na URL")
+		}
+		io.WriteString(w, `{"status":"ok","sealed":false}`)
+	}), tls.VersionTLS13)
+
+	c.Health(context.Background())
+	c.SetToken("tok123")
+	c.Health(context.Background())
+	if len(got) != 2 || got[0] != "" || got[1] != "Bearer tok123" {
+		t.Fatalf("Authorization = %q", got)
+	}
+}
+
+func TestLogin(t *testing.T) {
+	_, c := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ Email, Password string }
+		json.NewDecoder(r.Body).Decode(&in)
+		if r.URL.Path != "/v1/auth/login" || in.Password != "senha certa longa" {
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, `{"error":"invalid_credentials","message":"e-mail ou senha incorretos"}`)
+			return
+		}
+		io.WriteString(w, `{"token":"t","expires_at":"2026-10-22T20:00:00Z","must_change_password":true}`)
+	}), tls.VersionTLS13)
+
+	res, err := c.Login(context.Background(), "a@b.com", "senha certa longa")
+	if err != nil || res.Token != "t" || !res.MustChangePassword {
+		t.Fatalf("Login = %+v, %v", res, err)
+	}
+	var apiErr *client.APIError
+	if _, err := c.Login(context.Background(), "a@b.com", "errada"); !errors.As(err, &apiErr) || apiErr.Code != "invalid_credentials" {
+		t.Fatalf("senha errada: %v", err)
+	}
+}
