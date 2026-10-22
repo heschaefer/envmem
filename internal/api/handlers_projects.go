@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/heschaefer/envmem/internal/auth"
 	"github.com/heschaefer/envmem/internal/store"
 )
 
@@ -17,6 +18,7 @@ var projectNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 type projectItem struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	Role string `json:"role,omitempty"` // papel de quem pediu a lista
 }
 
 type listProjectsResponse struct {
@@ -27,18 +29,33 @@ type createProjectRequest struct {
 	Name string `json:"name"`
 }
 
-// handleListProjects devolve os projetos. Até a Fatia 4 (autenticação),
-// devolve todos e sem papel; depois, só os do usuário, com o papel dele.
+// handleListProjects devolve os projetos de quem pediu, com o papel em cada
+// um: superadmin e admin veem todos (com o papel global); os demais, só os
+// projetos de que são membros. Os outros nem aparecem (decisão 6).
 func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := s.store.ListProjects(r.Context())
-	if err != nil {
-		s.logger.Error("listar projetos", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
-		return
-	}
-	items := make([]projectItem, 0, len(projects))
-	for _, p := range projects {
-		items = append(items, projectItem{ID: p.ID, Name: p.Name})
+	user := sessionFrom(r.Context()).user
+	items := []projectItem{}
+
+	if role := auth.GlobalRole(user.GlobalRole); role != auth.RoleUser {
+		projects, err := s.store.ListProjects(r.Context())
+		if err != nil {
+			s.logger.Error("listar projetos", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+			return
+		}
+		for _, p := range projects {
+			items = append(items, projectItem{ID: p.ID, Name: p.Name, Role: string(role)})
+		}
+	} else {
+		memberships, err := s.store.ProjectsForMember(r.Context(), user.ID)
+		if err != nil {
+			s.logger.Error("listar projetos do usuário", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+			return
+		}
+		for _, m := range memberships {
+			items = append(items, projectItem{ID: m.ID, Name: m.Name, Role: m.Role})
+		}
 	}
 	writeJSON(w, http.StatusOK, listProjectsResponse{Projects: items})
 }
@@ -94,25 +111,4 @@ func (s *server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("projeto apagado", "project", name)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// lookupProject busca o projeto da rota. Se não existir ou der erro, já
-// escreve a resposta e devolve ok = false.
-func (s *server) lookupProject(w http.ResponseWriter, r *http.Request) (p store.Project, ok bool) {
-	name := r.PathValue("project")
-	p, err := s.store.ProjectByName(r.Context(), name)
-	if errors.Is(err, store.ErrNotFound) {
-		writeProjectNotFound(w)
-		return store.Project{}, false
-	}
-	if err != nil {
-		s.logger.Error("ler projeto", "project", name, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
-		return store.Project{}, false
-	}
-	return p, true
-}
-
-func writeProjectNotFound(w http.ResponseWriter) {
-	writeError(w, http.StatusNotFound, "project_not_found", "projeto não encontrado")
 }

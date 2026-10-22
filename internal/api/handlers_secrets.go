@@ -37,10 +37,7 @@ func (s *server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		writeSealed(w)
 		return
 	}
-	project, ok := s.lookupProject(w, r)
-	if !ok {
-		return
-	}
+	project := projectFrom(r.Context()).project
 
 	rows, err := s.store.LatestSecrets(r.Context(), project.ID)
 	if err != nil {
@@ -97,12 +94,9 @@ func (s *server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_value", "o valor não pode conter byte nulo")
 		return
 	}
-	// O projeto precisa existir: o PUT não cria projeto implicitamente, para
-	// que um nome digitado errado não gere um projeto novo.
-	project, ok := s.lookupProject(w, r)
-	if !ok {
-		return
-	}
+	// O projeto já foi resolvido e a permissão conferida (authorize). O PUT
+	// não cria projeto: um nome digitado errado dá 404, não um projeto novo.
+	project := projectFrom(r.Context()).project
 
 	value := []byte(req.Value)
 	env, err := s.vault.EncryptSecret(project.ID, key, value)

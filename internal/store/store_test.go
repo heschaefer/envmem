@@ -474,3 +474,48 @@ func TestSessions(t *testing.T) {
 		t.Fatal("hash de tamanho errado aceito")
 	}
 }
+
+// Membros, rodando como envmem_app.
+func TestMembers(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	if err := openStore(t, url).Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, asAppRole(url))
+	u, err := s.CreateFirstSuperadmin(ctx, "dev@empresa.com", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	demo := createProject(t, s, "demo")
+	outro := createProject(t, s, "outro")
+
+	if _, err := s.MemberRole(ctx, demo.ID, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("antes de ser membro: %v", err)
+	}
+	if err := s.SetMember(ctx, demo.ID, u.ID, RoleDesenvolvedor); err != nil {
+		t.Fatal(err)
+	}
+	// SetMember de novo troca o papel (nomear gestor).
+	if err := s.SetMember(ctx, demo.ID, u.ID, RoleGestor); err != nil {
+		t.Fatal(err)
+	}
+	if role, err := s.MemberRole(ctx, demo.ID, u.ID); err != nil || role != RoleGestor {
+		t.Fatalf("MemberRole = %q, %v", role, err)
+	}
+	if err := s.SetMember(ctx, outro.ID, u.ID, RoleDesenvolvedor); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ProjectsForMember(ctx, u.ID)
+	if err != nil || len(got) != 2 || got[0].Name != "demo" || got[0].Role != RoleGestor || got[1].Role != RoleDesenvolvedor {
+		t.Fatalf("ProjectsForMember = %+v, %v", got, err)
+	}
+	// O banco só aceita os dois papéis de projeto.
+	if err := s.SetMember(ctx, demo.ID, u.ID, "superadmin"); err == nil {
+		t.Fatal("papel de projeto inválido aceito")
+	}
+	if err := s.SetMember(ctx, "00000000-0000-0000-0000-000000000000", u.ID, RoleGestor); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("projeto inexistente: %v", err)
+	}
+}

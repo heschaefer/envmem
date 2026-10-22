@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/heschaefer/envmem/internal/auth"
@@ -19,6 +20,8 @@ type Store interface {
 	InsertVaultMeta(ctx context.Context, m store.VaultMeta) (bool, error)
 	CreateProject(ctx context.Context, name string) (store.Project, error)
 	ProjectByName(ctx context.Context, name string) (store.Project, error)
+	MemberRole(ctx context.Context, projectID, userID string) (string, error)
+	ProjectsForMember(ctx context.Context, userID string) ([]store.ProjectMembership, error)
 	ListProjects(ctx context.Context) ([]store.Project, error)
 	DeleteProject(ctx context.Context, name string) error
 	UserByEmail(ctx context.Context, email string) (store.User, error)
@@ -69,20 +72,26 @@ func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Ti
 	mux.HandleFunc("POST /v1/unseal", s.handleUnseal)
 	mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
 
-	// Todas as outras exigem sessão. Registrá-las só por esta função faz a
-	// falha ser fechada: uma rota nova sem autenticação teria de ser posta,
-	// de propósito, na lista acima.
-	private := func(pattern string, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, s.requireAuth(h))
+	// Todas as outras exigem sessão e uma permissão (decisão 5), e só podem
+	// ser registradas por esta função: não existe rota autenticada sem
+	// permissão declarada. A falha é fechada: uma rota sem sessão teria de
+	// ser posta, de propósito, na lista acima.
+	route := func(pattern string, p auth.Permission, h http.HandlerFunc) {
+		// Uma permissão de projeto numa rota sem {project} não teria como
+		// ser conferida: erro de programação, que impede o servidor de subir.
+		if p.Project && !strings.Contains(pattern, "{project}") {
+			panic("api: permissão de projeto " + p.Name + " na rota sem {project}: " + pattern)
+		}
+		mux.HandleFunc(pattern, s.requireAuth(s.authorize(p, h)))
 	}
-	private("POST /v1/auth/logout", s.handleLogout)
-	private("GET /v1/auth/me", s.handleMe)
-	private("POST /v1/auth/password", s.handleChangePassword)
-	private("GET /v1/projects", s.handleListProjects)
-	private("POST /v1/projects", s.handleCreateProject)
-	private("DELETE /v1/projects/{project}", s.handleDeleteProject)
-	private("GET /v1/projects/{project}/secrets", s.handleListSecrets)
-	private("PUT /v1/projects/{project}/secrets/{key}", s.handlePutSecret)
+	route("POST /v1/auth/logout", auth.PermSession, s.handleLogout)
+	route("GET /v1/auth/me", auth.PermSession, s.handleMe)
+	route("POST /v1/auth/password", auth.PermSession, s.handleChangePassword)
+	route("GET /v1/projects", auth.PermSession, s.handleListProjects)
+	route("POST /v1/projects", auth.PermManageProjects, s.handleCreateProject)
+	route("DELETE /v1/projects/{project}", auth.PermManageProjects, s.handleDeleteProject)
+	route("GET /v1/projects/{project}/secrets", auth.PermUseSecrets, s.handleListSecrets)
+	route("PUT /v1/projects/{project}/secrets/{key}", auth.PermWriteSecrets, s.handlePutSecret)
 
 	// Qualquer outra rota (ou método) cai aqui, para que até o 404 siga o
 	// formato de erro JSON da API em vez do texto puro do net/http.
