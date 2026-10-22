@@ -109,7 +109,11 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("o login deveria ter gravado o token: %v", err)
 	}
 
-	// 1. Sobe selado: GET de segredos devolve 503.
+	// 1. Cria o projeto demo pelo CLI (não depende do cofre). O servidor
+	// subiu selado: GET de segredos devolve 503.
+	if _, stdout, _ := runEnvmem(t, "projects", "create", "--servidor", url, "--ca", ca, "demo"); stdout != "projeto demo criado\n" {
+		t.Errorf("projects create: stdout = %q", stdout)
+	}
 	wantStatus(t, "GET selado", http.StatusServiceUnavailable,
 		request(t, hc, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
 
@@ -117,10 +121,7 @@ func TestEndToEnd(t *testing.T) {
 	wantStatus(t, "unseal", http.StatusOK,
 		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
-	// 3. Cria o projeto demo pelo CLI e grava o segredo DB_PASSWORD nele.
-	if _, stdout, _ := runEnvmem(t, "projects", "create", "--servidor", url, "--ca", ca, "demo"); stdout != "projeto demo criado\n" {
-		t.Errorf("projects create: stdout = %q", stdout)
-	}
+	// 3. Lista os projetos pelo CLI e grava o segredo DB_PASSWORD no demo.
 	if _, stdout, _ := runEnvmem(t, "projects", "list", "--servidor", url, "--ca", ca); stdout != "demo\n" {
 		t.Errorf("projects list: stdout = %q, quero %q", stdout, "demo\n")
 	}

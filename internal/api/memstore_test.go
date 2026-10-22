@@ -23,6 +23,39 @@ type memStore struct {
 	secrets  []store.SecretRow
 	users    []store.User
 	sessions []memSession
+	members  map[[2]string]string // (projeto, usuário) -> papel
+}
+
+func (m *memStore) MemberRole(ctx context.Context, projectID, userID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if role, ok := m.members[[2]string{projectID, userID}]; ok {
+		return role, nil
+	}
+	return "", store.ErrNotFound
+}
+
+// setMember grava um membro direto no store (como o SetMember).
+func (m *memStore) setMember(projectID, userID, role string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.members == nil {
+		m.members = map[[2]string]string{}
+	}
+	m.members[[2]string{projectID, userID}] = role
+}
+
+func (m *memStore) ProjectsForMember(ctx context.Context, userID string) ([]store.ProjectMembership, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []store.ProjectMembership
+	for _, p := range m.projects {
+		if role, ok := m.members[[2]string{p.ID, userID}]; ok {
+			out = append(out, store.ProjectMembership{Project: p, Role: role})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 type memSession struct {
