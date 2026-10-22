@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -623,5 +624,83 @@ func TestResetLoneSuperadminPassword(t *testing.T) {
 	}
 	if _, err := s.ResetLoneSuperadminPassword(ctx, "root@empresa.com", "x", exp); !errors.Is(err, ErrSuperadminExists) {
 		t.Fatalf("com outro superadmin: %v", err)
+	}
+}
+
+// Lixeira, retenção e versões, rodando como envmem_app.
+func TestTrashAndRetention(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	if err := openStore(t, url).Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, asAppRole(url))
+	p := createProject(t, s, "demo")
+	put := func(key, ct string) int {
+		t.Helper()
+		v, err := s.InsertSecretVersion(ctx, row(p.ID, key, ct))
+		if err != nil {
+			t.Fatalf("Insert %s: %v", ct, err)
+		}
+		return v
+	}
+
+	// Retenção: 12 versões gravadas, 10 guardadas.
+	for i := 1; i <= SecretRetention+2; i++ {
+		put("K", "v"+strconv.Itoa(i))
+	}
+	meta, err := s.SecretsMeta(ctx, p.ID)
+	if err != nil || len(meta) != 1 || meta[0].Version != 12 || meta[0].Versions != SecretRetention {
+		t.Fatalf("SecretsMeta = %+v, %v", meta, err)
+	}
+	if _, err := s.SecretVersion(ctx, p.ID, "K", 2); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("versão 2 deveria ter sido apagada: %v", err)
+	}
+	if r, err := s.SecretVersion(ctx, p.ID, "K", 0); err != nil || r.Version != 12 || string(r.Ciphertext) != "v12" {
+		t.Fatalf("versão atual = %+v, %v", r, err)
+	}
+
+	// Lixeira: some do run e da listagem; restaurar devolve.
+	if v, err := s.TrashSecret(ctx, p.ID, "K"); err != nil || v != 12 {
+		t.Fatalf("TrashSecret = %d, %v", v, err)
+	}
+	if got, _ := s.LatestSecrets(ctx, p.ID); len(got) != 0 {
+		t.Fatalf("o run ainda vê o segredo na lixeira: %+v", got)
+	}
+	if _, err := s.SecretVersion(ctx, p.ID, "K", 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("segredo na lixeira lido: %v", err)
+	}
+	if trash, err := s.ListTrash(ctx, p.ID); err != nil || len(trash) != 1 || trash[0].Version != 12 {
+		t.Fatalf("ListTrash = %+v, %v", trash, err)
+	}
+	if _, err := s.TrashSecret(ctx, p.ID, "K"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("lixeira de novo: %v", err)
+	}
+	if _, err := s.RestoreSecret(ctx, p.ID, "K"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.LatestSecrets(ctx, p.ID); len(got) != 1 {
+		t.Fatalf("depois de restaurar: %+v", got)
+	}
+
+	// PUT numa chave da lixeira: versão seguinte, fora da lixeira.
+	s.TrashSecret(ctx, p.ID, "K")
+	if v := put("K", "nova"); v != 13 {
+		t.Fatalf("versão depois da lixeira = %d", v)
+	}
+	if got, _ := s.LatestSecrets(ctx, p.ID); len(got) != 1 || string(got[0].Ciphertext) != "nova" {
+		t.Fatalf("run depois do PUT: %+v", got)
+	}
+
+	// Exclusão definitiva só do que está na lixeira.
+	if _, err := s.PurgeSecret(ctx, p.ID, "K"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("purge fora da lixeira: %v", err)
+	}
+	s.TrashSecret(ctx, p.ID, "K")
+	if _, err := s.PurgeSecret(ctx, p.ID, "K"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteProject(ctx, "demo"); err != nil {
+		t.Fatalf("projeto sem segredos deveria sair: %v", err)
 	}
 }

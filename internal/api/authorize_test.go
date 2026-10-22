@@ -71,6 +71,20 @@ func TestRouteRoleMatrix(t *testing.T) {
 		// No outro, o gestor do demo é só desenvolvedor.
 		{"PUT", "/v1/projects/outro/secrets/K_{ROLE}", `{"value":"v"}`, map[string]string{
 			"superadmin": ok, "admin": ok, "gestor": forbidden, "desenvolvedor": notFound, "de-fora": notFound}},
+		{"GET", "/v1/projects/demo/secrets/meta", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": ok, "de-fora": notFound}},
+		{"GET", "/v1/projects/demo/secrets/K_{ROLE}", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
+		{"DELETE", "/v1/projects/demo/secrets/K_{ROLE}", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
+		{"POST", "/v1/projects/demo/secrets/K_{ROLE}/restore", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
+		{"DELETE", "/v1/projects/demo/secrets/K_{ROLE}", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
+		{"GET", "/v1/projects/demo/trash", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
+		{"DELETE", "/v1/projects/demo/trash/K_{ROLE}", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": notFound}},
 		{"GET", "/v1/projects/demo/members", "", map[string]string{
 			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
 		{"GET", "/v1/users", "", map[string]string{

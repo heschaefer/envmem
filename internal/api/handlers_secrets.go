@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heschaefer/envmem/internal/envname"
 	"github.com/heschaefer/envmem/internal/store"
@@ -79,6 +82,12 @@ func (s *server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_key_name", err.Error())
 		return
 	}
+	// "meta" é válido como variável, mas o caminho GET .../secrets/meta é a
+	// listagem de nomes: um segredo com esse nome não poderia ser lido.
+	if key == "meta" {
+		writeError(w, http.StatusBadRequest, "invalid_key_name", `"meta" é reservado (é o caminho da listagem de nomes)`)
+		return
+	}
 	if s.vault.Sealed() {
 		writeSealed(w)
 		return
@@ -148,4 +157,154 @@ func envelopeOf(row store.SecretRow) vault.Envelope {
 
 func writeSealed(w http.ResponseWriter) {
 	writeError(w, http.StatusServiceUnavailable, "sealed", "o cofre está selado")
+}
+
+type secretMetaItem struct {
+	Key       string    `json:"key"`
+	Version   int       `json:"version"`
+	Versions  int       `json:"versions"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type secretsMetaResponse struct {
+	Project string           `json:"project"`
+	Secrets []secretMetaItem `json:"secrets"`
+}
+
+type secretResponse struct {
+	Key       string    `json:"key"`
+	Value     string    `json:"value"`
+	Version   int       `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type trashItem struct {
+	Key       string    `json:"key"`
+	Version   int       `json:"version"`
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+type trashResponse struct {
+	Project string      `json:"project"`
+	Trash   []trashItem `json:"trash"`
+}
+
+// handleSecretsMeta lista os nomes e as versões dos segredos, sem os
+// valores. Não precisa do cofre aberto: nada é decifrado.
+func (s *server) handleSecretsMeta(w http.ResponseWriter, r *http.Request) {
+	project := projectFrom(r.Context()).project
+	metas, err := s.store.SecretsMeta(r.Context(), project.ID)
+	if err != nil {
+		s.logger.Error("listar nomes de segredos", "project", project.Name, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return
+	}
+	items := make([]secretMetaItem, 0, len(metas))
+	for _, m := range metas {
+		items = append(items, secretMetaItem{Key: m.Key, Version: m.Version, Versions: m.Versions, UpdatedAt: m.UpdatedAt})
+	}
+	writeJSON(w, http.StatusOK, secretsMetaResponse{Project: project.Name, Secrets: items})
+}
+
+// handleGetSecret devolve o valor de um segredo: a versão atual ou a de
+// ?version=N. É a rota de "ver valores", que o desenvolvedor não tem.
+func (s *server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
+	project, key := projectFrom(r.Context()).project, r.PathValue("key")
+	version := 0
+	if v := r.URL.Query().Get("version"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_version", "versão inválida (use um número a partir de 1)")
+			return
+		}
+		version = n
+	}
+	if s.vault.Sealed() {
+		writeSealed(w)
+		return
+	}
+
+	row, err := s.store.SecretVersion(r.Context(), project.ID, key, version)
+	if errors.Is(err, store.ErrNotFound) {
+		writeSecretNotFound(w)
+		return
+	}
+	if err != nil {
+		s.logger.Error("ler segredo", "project", project.Name, "key", key, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return
+	}
+	plaintext, err := s.vault.DecryptSecret(project.ID, row.Key, envelopeOf(row))
+	if errors.Is(err, vault.ErrSealed) {
+		writeSealed(w)
+		return
+	}
+	if err != nil {
+		s.logger.Error("segredo não decifra: possível adulteração no banco",
+			"project", project.Name, "key", row.Key, "version", row.Version)
+		writeError(w, http.StatusInternalServerError, "decrypt_failed", "não foi possível decifrar o segredo")
+		return
+	}
+	resp := secretResponse{Key: row.Key, Value: string(plaintext), Version: row.Version, CreatedAt: row.CreatedAt}
+	clear(plaintext)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleTrashSecret manda o segredo para a lixeira (decisão 11): o run
+// deixa de entregá-lo, mas ele pode ser restaurado.
+func (s *server) handleTrashSecret(w http.ResponseWriter, r *http.Request) {
+	s.trashAction(w, r, "segredo enviado à lixeira", s.store.TrashSecret, writeSecretNotFound)
+}
+
+// handleRestoreSecret tira o segredo da lixeira.
+func (s *server) handleRestoreSecret(w http.ResponseWriter, r *http.Request) {
+	s.trashAction(w, r, "segredo restaurado", s.store.RestoreSecret, writeNotInTrash)
+}
+
+// handlePurgeSecret exclui definitivamente um segredo que está na lixeira
+// (só admin e superadmin, decisão 11). Quando o MFA existir, esta ação vai
+// pedir o código do autenticador de novo.
+func (s *server) handlePurgeSecret(w http.ResponseWriter, r *http.Request) {
+	s.trashAction(w, r, "segredo excluído definitivamente", s.store.PurgeSecret, writeNotInTrash)
+}
+
+func (s *server) trashAction(w http.ResponseWriter, r *http.Request, logMsg string,
+	op func(ctx context.Context, projectID, key string) (int, error), notFound func(http.ResponseWriter)) {
+	project, key := projectFrom(r.Context()).project, r.PathValue("key")
+	version, err := op(r.Context(), project.ID, key)
+	if errors.Is(err, store.ErrNotFound) {
+		notFound(w)
+		return
+	}
+	if err != nil {
+		s.logger.Error(logMsg, "project", project.Name, "key", key, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return
+	}
+	s.logger.Info(logMsg, "project", project.Name, "key", key, "version", version)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListTrash lista o que está na lixeira, para restaurar ou excluir.
+func (s *server) handleListTrash(w http.ResponseWriter, r *http.Request) {
+	project := projectFrom(r.Context()).project
+	trashed, err := s.store.ListTrash(r.Context(), project.ID)
+	if err != nil {
+		s.logger.Error("listar lixeira", "project", project.Name, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return
+	}
+	items := make([]trashItem, 0, len(trashed))
+	for _, t := range trashed {
+		items = append(items, trashItem{Key: t.Key, Version: t.Version, DeletedAt: t.DeletedAt})
+	}
+	writeJSON(w, http.StatusOK, trashResponse{Project: project.Name, Trash: items})
+}
+
+func writeSecretNotFound(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "secret_not_found", "segredo não encontrado")
+}
+
+func writeNotInTrash(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not_in_trash", "o segredo não está na lixeira")
 }

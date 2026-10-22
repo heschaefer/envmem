@@ -37,6 +37,12 @@ type Store interface {
 	DeleteSession(ctx context.Context, tokenHash []byte) error
 	ChangePassword(ctx context.Context, userID, passwordHash string, keepTokenHash []byte) error
 	LatestSecrets(ctx context.Context, projectID string) ([]store.SecretRow, error)
+	SecretVersion(ctx context.Context, projectID, key string, version int) (store.SecretRow, error)
+	SecretsMeta(ctx context.Context, projectID string) ([]store.SecretMeta, error)
+	TrashSecret(ctx context.Context, projectID, key string) (int, error)
+	RestoreSecret(ctx context.Context, projectID, key string) (int, error)
+	PurgeSecret(ctx context.Context, projectID, key string) (int, error)
+	ListTrash(ctx context.Context, projectID string) ([]store.TrashedSecret, error)
 	InsertSecretVersion(ctx context.Context, row store.SecretRow) (int, error)
 }
 
@@ -106,7 +112,13 @@ func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Ti
 	route("DELETE /v1/users/{user}", auth.PermManageUsers, s.handleDeleteUser)
 	route("POST /v1/users/{user}/password/reset", auth.PermManageUsers, s.handleResetPassword)
 	route("GET /v1/projects/{project}/secrets", auth.PermUseSecrets, s.handleListSecrets)
+	route("GET /v1/projects/{project}/secrets/meta", auth.PermListSecretNames, s.handleSecretsMeta)
+	route("GET /v1/projects/{project}/secrets/{key}", auth.PermReadSecretValue, s.handleGetSecret)
 	route("PUT /v1/projects/{project}/secrets/{key}", auth.PermWriteSecrets, s.handlePutSecret)
+	route("DELETE /v1/projects/{project}/secrets/{key}", auth.PermWriteSecrets, s.handleTrashSecret)
+	route("POST /v1/projects/{project}/secrets/{key}/restore", auth.PermWriteSecrets, s.handleRestoreSecret)
+	route("GET /v1/projects/{project}/trash", auth.PermWriteSecrets, s.handleListTrash)
+	route("DELETE /v1/projects/{project}/trash/{key}", auth.PermPurgeSecrets, s.handlePurgeSecret)
 
 	// Qualquer outra rota (ou método) cai aqui, para que até o 404 siga o
 	// formato de erro JSON da API em vez do texto puro do net/http.
