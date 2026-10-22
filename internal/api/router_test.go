@@ -9,33 +9,53 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/heschaefer/envmem/internal/vault"
 )
 
-// testEnv é um servidor de teste: roteador, cofre, store em memória e o log.
+// testEnv é um servidor de teste: roteador, cofre, store em memória, o log
+// e um relógio falso, que o roteador e o store compartilham.
 type testEnv struct {
 	h     http.Handler
 	vault *vault.Vault
 	store *memStore
 	logs  *bytes.Buffer
+	clock *testClock
 }
+
+type testClock struct{ t time.Time }
+
+func (c *testClock) now() time.Time      { return c.t }
+func (c *testClock) add(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	e := &testEnv{vault: vault.New(), store: &memStore{}, logs: &bytes.Buffer{}}
-	e.h = NewRouter(slog.New(slog.NewJSONHandler(e.logs, nil)), e.store, e.vault)
+	clock := &testClock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
+	e := &testEnv{vault: vault.New(), store: &memStore{now: clock.now}, logs: &bytes.Buffer{}, clock: clock}
+	e.h = newRouter(slog.New(slog.NewJSONHandler(e.logs, nil)), e.store, e.vault, clock.now)
 	return e
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return e.doAs(t, "", method, path, body)
+}
+
+// doAs faz a requisição com o token no cabeçalho Authorization (se não for
+// vazio).
+func (e *testEnv) doAs(t *testing.T, token, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	var r io.Reader
 	if body != "" {
 		r = strings.NewReader(body)
 	}
+	req := httptest.NewRequest(method, path, r)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, httptest.NewRequest(method, path, r))
+	e.h.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -104,7 +124,7 @@ func TestUnsealFirstTimeThenRestart(t *testing.T) {
 	}
 
 	// "Reinício": cofre novo (selado), mesmo banco.
-	restarted := &testEnv{vault: vault.New(), store: e.store, logs: &bytes.Buffer{}}
+	restarted := &testEnv{vault: vault.New(), store: e.store, logs: &bytes.Buffer{}, clock: e.clock}
 	restarted.h = NewRouter(slog.New(slog.DiscardHandler), restarted.store, restarted.vault)
 
 	wantError(t, restarted.unseal(t, vault.EncodeKey(vault.GenerateKey())),

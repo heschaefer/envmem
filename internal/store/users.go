@@ -60,3 +60,27 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 	}
 	return u, nil
 }
+
+// ChangePassword grava a nova senha definitiva escolhida pelo usuário (o
+// que encerra uma senha temporária) e revoga as outras sessões dele, tudo
+// na mesma transação. A sessão keepTokenHash, a de quem está trocando,
+// continua valendo. Revogar as demais garante que, se a senha foi trocada
+// por suspeita de vazamento, quem estava usando a conta perde o acesso.
+func (s *Store) ChangePassword(ctx context.Context, userID, passwordHash string, keepTokenHash []byte) error {
+	const update = `UPDATE users SET password_hash = $2, temp_password_expires_at = NULL WHERE id = $1`
+	const revoke = `DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`
+
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, update, userID, passwordHash)
+		if err != nil {
+			return fmt.Errorf("store: trocar senha: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, revoke, userID, keepTokenHash); err != nil {
+			return fmt.Errorf("store: revogar sessões: %w", err)
+		}
+		return nil
+	})
+}

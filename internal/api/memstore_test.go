@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/heschaefer/envmem/internal/store"
 )
@@ -14,10 +16,96 @@ import (
 // ErrProjectNotEmpty, vault_meta gravado uma única vez).
 type memStore struct {
 	mu       sync.Mutex
+	now      func() time.Time // o mesmo relógio do roteador
 	meta     *store.VaultMeta
 	projects []store.Project
 	nextID   int
 	secrets  []store.SecretRow
+	users    []store.User
+	sessions []memSession
+}
+
+type memSession struct {
+	tokenHash []byte
+	userID    string
+	expiresAt time.Time
+}
+
+// addUser cria um usuário direto no store, como o create-superadmin (ou,
+// mais tarde, o POST /users) faria.
+func (m *memStore) addUser(u store.User) store.User {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	u.ID = fmt.Sprintf("user-%d", m.nextID)
+	m.users = append(m.users, u)
+	return u
+}
+
+func (m *memStore) UserByEmail(ctx context.Context, email string) (store.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.users {
+		if u.Email == email {
+			return u, nil
+		}
+	}
+	return store.User{}, store.ErrNotFound
+}
+
+func (m *memStore) CreateSession(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions = append(m.sessions, memSession{tokenHash, userID, expiresAt})
+	return nil
+}
+
+func (m *memStore) UserBySession(ctx context.Context, tokenHash []byte) (store.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sess := range m.sessions {
+		if bytes.Equal(sess.tokenHash, tokenHash) && m.now().Before(sess.expiresAt) {
+			for _, u := range m.users {
+				if u.ID == sess.userID {
+					return u, nil
+				}
+			}
+		}
+	}
+	return store.User{}, store.ErrNotFound
+}
+
+func (m *memStore) DeleteSession(ctx context.Context, tokenHash []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions = filterSessions(m.sessions, func(s memSession) bool { return !bytes.Equal(s.tokenHash, tokenHash) })
+	return nil
+}
+
+func (m *memStore) ChangePassword(ctx context.Context, userID, passwordHash string, keepTokenHash []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.users {
+		if m.users[i].ID == userID {
+			m.users[i].PasswordHash = passwordHash
+			m.users[i].TempPasswordExpiresAt = nil
+			m.sessions = filterSessions(m.sessions, func(s memSession) bool {
+				return s.userID != userID || bytes.Equal(s.tokenHash, keepTokenHash)
+			})
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+func filterSessions(in []memSession, keep func(memSession) bool) []memSession {
+	var out []memSession
+	for _, s := range in {
+		if keep(s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (m *memStore) GetVaultMeta(ctx context.Context) (store.VaultMeta, error) {

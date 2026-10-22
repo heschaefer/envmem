@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -418,5 +419,58 @@ func TestUserEmailIsChecked(t *testing.T) {
 		if _, err := s.CreateFirstSuperadmin(context.Background(), email, "h"); err == nil || errors.Is(err, ErrSuperadminExists) {
 			t.Errorf("CreateFirstSuperadmin(%q): %v, esperava recusa do CHECK", email, err)
 		}
+	}
+}
+
+// Sessões, rodando como envmem_app (os privilégios da 00003 bastam).
+func TestSessions(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	owner := openStore(t, url)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, asAppRole(url))
+	u, err := s.CreateFirstSuperadmin(ctx, "admin@empresa.com", "hash-antigo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hash := func(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+	future, past := time.Now().Add(time.Hour), time.Now().Add(-time.Second)
+	for b, exp := range map[byte]time.Time{1: future, 2: future, 3: past} {
+		if err := s.CreateSession(ctx, hash(b), u.ID, exp); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+	}
+
+	if got, err := s.UserBySession(ctx, hash(1)); err != nil || got.ID != u.ID {
+		t.Fatalf("UserBySession = %+v, %v", got, err)
+	}
+	// Sessão vencida, conferida pelo relógio do banco.
+	if _, err := s.UserBySession(ctx, hash(3)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("sessão vencida: %v, quero ErrNotFound", err)
+	}
+
+	// Trocar a senha mantém a sessão atual e revoga as outras.
+	if err := s.ChangePassword(ctx, u.ID, "hash-novo", hash(1)); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if got, err := s.UserBySession(ctx, hash(1)); err != nil || got.PasswordHash != "hash-novo" || got.TempPasswordExpiresAt != nil {
+		t.Fatalf("sessão atual depois da troca = %+v, %v", got, err)
+	}
+	if _, err := s.UserBySession(ctx, hash(2)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a outra sessão deveria ter sido revogada: %v", err)
+	}
+
+	if err := s.DeleteSession(ctx, hash(1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UserBySession(ctx, hash(1)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("depois do logout: %v", err)
+	}
+	// O banco só aceita hash de 32 bytes (SHA-256).
+	if err := s.CreateSession(ctx, []byte("curto"), u.ID, future); err == nil {
+		t.Fatal("hash de tamanho errado aceito")
 	}
 }
