@@ -26,6 +26,8 @@ func main() {
 			return
 		case "migrate":
 			os.Exit(cmdMigrate())
+		case "create-superadmin":
+			os.Exit(cmdSuperadmin(os.Args[2:]))
 		}
 	}
 

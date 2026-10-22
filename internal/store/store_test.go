@@ -384,3 +384,39 @@ func TestAppRoleCannotTamperWithAudit(t *testing.T) {
 func isPermissionDenied(err error) bool {
 	return hasCode(err, "42501")
 }
+
+func TestFirstSuperadmin(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateFirstSuperadmin(ctx, "admin@empresa.com", "$argon2id$hash")
+	if err != nil {
+		t.Fatalf("CreateFirstSuperadmin: %v", err)
+	}
+	if u.ID == "" || u.GlobalRole != RoleSuperadmin || u.TempPasswordExpiresAt != nil {
+		t.Fatalf("usuário criado = %+v", u)
+	}
+	// Só o primeiro: com um superadmin existente, o comando não cria outro.
+	if _, err := s.CreateFirstSuperadmin(ctx, "outro@empresa.com", "h"); !errors.Is(err, ErrSuperadminExists) {
+		t.Fatalf("segundo superadmin: %v, quero ErrSuperadminExists", err)
+	}
+
+	got, err := s.UserByEmail(ctx, "admin@empresa.com")
+	if err != nil || got.ID != u.ID || got.PasswordHash != "$argon2id$hash" {
+		t.Fatalf("UserByEmail = %+v, %v", got, err)
+	}
+	if _, err := s.UserByEmail(ctx, "ninguem@empresa.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UserByEmail inexistente: %v, quero ErrNotFound", err)
+	}
+}
+
+// O banco só aceita e-mail já normalizado (minúsculas), mesmo que a
+// aplicação esqueça de normalizar.
+func TestUserEmailIsChecked(t *testing.T) {
+	s := newTestStore(t)
+	for _, email := range []string{"Admin@Empresa.com", "sem-arroba", "@empresa.com"} {
+		if _, err := s.CreateFirstSuperadmin(context.Background(), email, "h"); err == nil || errors.Is(err, ErrSuperadminExists) {
+			t.Errorf("CreateFirstSuperadmin(%q): %v, esperava recusa do CHECK", email, err)
+		}
+	}
+}

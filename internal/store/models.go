@@ -14,7 +14,31 @@ var (
 	// ErrProjectNotEmpty indica uma tentativa de apagar um projeto que
 	// ainda tem segredos.
 	ErrProjectNotEmpty = errors.New("store: projeto tem segredos")
+	// ErrSuperadminExists indica que já existe um superadmin, então o
+	// create-superadmin (só para o primeiro) não roda.
+	ErrSuperadminExists = errors.New("store: já existe um superadmin")
 )
+
+// Papéis globais. Um usuário sem papel global tem GlobalRole vazio (NULL no
+// banco) e só acessa os projetos de que é membro.
+const (
+	RoleSuperadmin = "superadmin"
+	RoleAdmin      = "admin"
+)
+
+// User é um usuário do envmem. PasswordHash é o argon2id no formato PHC;
+// a senha em claro nunca chega ao store.
+type User struct {
+	ID           string
+	Email        string
+	GlobalRole   string // RoleSuperadmin, RoleAdmin ou ""
+	PasswordHash string
+	// TempPasswordExpiresAt preenchido indica senha temporária (decisão
+	// 43): troca obrigatória no primeiro login, e não entra depois desse
+	// instante. Nil indica senha definitiva.
+	TempPasswordExpiresAt *time.Time
+	CreatedAt             time.Time
+}
 
 // Project é um projeto. Cada ambiente (app-prod, app-homo) é um projeto.
 type Project struct {

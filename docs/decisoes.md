@@ -51,6 +51,8 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 43 | Primeira senha: temporária, com troca obrigatória | aceita para a Fatia 4 |
 | 44 | Projeto nasce sem gestor | aceita para a Fatia 4 |
 | 45 | Limite de tentativas de login em memória | aceita para a Fatia 4 |
+| 46 | Senha esquecida: superadmin define nova senha temporária | aceita para a Fatia 4 |
+| 47 | Política de senha: de 12 a 128 caracteres, sem regras de composição | aceita (Fatia 4, passo 2) |
 
 ---
 
@@ -410,9 +412,9 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 **Contexto:** quando o superadmin cria um usuário, a pessoa precisa de um jeito de entrar pela primeira vez. Foram avaliados a senha temporária com troca obrigatória, um convite de uso único (código aleatório que só serve para definir a senha) e a senha definitiva escolhida pelo superadmin.
 
-**Decisão:** o superadmin cria o usuário com uma senha temporária, e o usuário é obrigado a trocá-la no primeiro login. Até trocar, a sessão não permite nenhuma outra ação.
+**Decisão:** o superadmin cria o usuário com uma senha temporária, e o usuário é obrigado a trocá-la no primeiro login. Até trocar, a sessão não permite nenhuma outra ação. Detalhes decididos em 22/10/2026: o superadmin digita a senha temporária (sem eco), e ela segue a mesma política das demais senhas (decisão 47); ela vence 72 horas depois de definida, e então não entra mais. No banco, uma única coluna (`temp_password_expires_at`, migração 00004) indica as duas coisas: vazia, a senha é definitiva; preenchida, a senha é temporária e vence naquele instante.
 
-**Consequências:** é o fluxo mais simples de implementar e de explicar. A senha temporária é entregue à pessoa por algum canal, como uma mensagem, e dá acesso enquanto não for trocada; por isso a troca obrigatória precisa ser conferida no servidor. Ficam para a implementação: quem gera a senha temporária (o superadmin ou o servidor, com `crypto/rand`) e se ela vence depois de um prazo.
+**Consequências:** é o fluxo mais simples de implementar e de explicar. A senha temporária é entregue à pessoa por algum canal, como uma mensagem, e dá acesso enquanto não for trocada; por isso a troca obrigatória precisa ser conferida no servidor. O prazo de 72 horas limita quanto tempo uma senha esquecida numa conversa continua valendo, e cobre um fim de semana. Como é o superadmin quem digita, a força da senha temporária depende dele; a política mínima de tamanho reduz, mas não elimina, o risco de senhas previsíveis. Uma coluna só, em vez de um indicador mais uma data, evita dois campos que possam se contradizer.
 
 ### 44. Projeto nasce sem gestor
 
@@ -447,6 +449,26 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 - Remover, restaurar e excluir definitivamente são registrados na auditoria (decisão 7).
 
 **Consequências:** um erro do gestor pode ser desfeito, e a ação irreversível fica com quem tem mais privilégio, sem exigir um fluxo de aprovação. A tabela de papéis passa a separar "remover e restaurar" de "excluir definitivamente". A retenção limita as credenciais antigas expostas se a chave-mestra vazar; a auditoria guarda só o número da versão, então perguntas como "quem recebeu a versão 3?" continuam respondidas depois que o valor dela é apagado. Apagar uma linha não a remove dos backups do banco nem do WAL do PostgreSQL; tornar ilegível o que ficou num backup exige trocar a chave que o cifrou (rotação, TCC II), e uma chave intermediária por projeto permitiria fazer isso projeto a projeto (crypto-shredding). Ficam para a implementação: o que acontece com um `PUT` numa chave que está na lixeira e se a lixeira se esvazia sozinha depois de um prazo.
+
+### 46. Senha esquecida: superadmin define nova senha temporária
+
+**Status:** aceita para a Fatia 4 (decidida em 22/10/2026)
+
+**Contexto:** não havia fluxo para quem esquece a senha. Um "esqueci minha senha" por e-mail exigiria um servidor de e-mail; remover e recriar o usuário perderia as participações em projetos e deixaria dois ids para a mesma pessoa na auditoria.
+
+**Decisão:** o superadmin define uma nova senha temporária para o usuário, com o mesmo mecanismo da decisão 43 (troca obrigatória e validade de 72 horas). Na mesma operação, as sessões abertas do usuário são revogadas.
+
+**Consequências:** não há mecanismo novo para explicar: é o fluxo da primeira senha aplicado de novo. Revogar as sessões garante que, se a senha foi trocada por suspeita de vazamento, quem estava usando a conta perde o acesso na hora. A tabela de papéis ganha a linha "resetar a senha de um usuário: superadmin". Fica em aberto o caso de um único superadmin que esquece a própria senha, que não tem quem o resete.
+
+### 47. Política de senha: de 12 a 128 caracteres, sem regras de composição
+
+**Status:** aceita (Fatia 4, passo 2, decidida em 22/10/2026)
+
+**Contexto:** não havia política de senha definida. Regras de composição (maiúscula, número, símbolo) costumam produzir senhas previsíveis, como "Senha@2026". Foram avaliados os mínimos de 8, 12 e 15 caracteres; 15 é o mínimo recomendado quando a senha é o único fator de autenticação, situação de todos os usuários enquanto não houver MFA.
+
+**Decisão:** toda senha, inclusive a temporária, tem de 12 a 128 caracteres, contados como caracteres (e não bytes). Não há regras de composição. O servidor confere a política; o CLI pode avisar antes, mas não decide.
+
+**Consequências:** 12 caracteres é um meio-termo entre atrito e força, abaixo do mínimo recomendado para fator único; essa diferença deve ser reconhecida no texto e reavaliada quando o MFA existir. O máximo de 128 só limita o tamanho da entrada; o argon2id aceita senhas longas sem custo extra relevante.
 
 ### 36. MFA para superadmin, admin e gestor
 
