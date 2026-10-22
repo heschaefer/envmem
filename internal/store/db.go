@@ -52,6 +52,12 @@ func isRestrictViolation(err error) bool {
 	return hasCode(err, "23001")
 }
 
+// isInvalidText diz se err é texto inválido para o tipo da coluna (código
+// 22P02), como um id que não é uuid vindo da URL: equivale a não encontrar.
+func isInvalidText(err error) bool {
+	return hasCode(err, "22P02")
+}
+
 func hasCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == code

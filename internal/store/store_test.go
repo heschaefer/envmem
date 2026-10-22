@@ -519,3 +519,109 @@ func TestMembers(t *testing.T) {
 		t.Fatalf("projeto inexistente: %v", err)
 	}
 }
+
+// Usuários, rodando como envmem_app.
+func TestUserManagement(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	if err := openStore(t, url).Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, asAppRole(url))
+	root, err := s.CreateFirstSuperadmin(ctx, "root@empresa.com", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := time.Now().Add(72 * time.Hour).Truncate(time.Microsecond)
+
+	dev, err := s.CreateUser(ctx, "dev@empresa.com", "", "h-temp", exp)
+	if err != nil || dev.GlobalRole != "" || dev.TempPasswordExpiresAt == nil || !dev.TempPasswordExpiresAt.Equal(exp) {
+		t.Fatalf("CreateUser = %+v, %v", dev, err)
+	}
+	if _, err := s.CreateUser(ctx, "dev@empresa.com", "", "h", exp); !errors.Is(err, ErrConflict) {
+		t.Fatalf("e-mail repetido: %v", err)
+	}
+	if got, err := s.UserByID(ctx, dev.ID); err != nil || got.Email != "dev@empresa.com" {
+		t.Fatalf("UserByID = %+v, %v", got, err)
+	}
+	if _, err := s.UserByID(ctx, "nao-e-uuid"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UserByID com id inválido: %v", err)
+	}
+	if list, err := s.ListUsers(ctx); err != nil || len(list) != 2 || list[0].Email != "dev@empresa.com" {
+		t.Fatalf("ListUsers = %+v, %v", list, err)
+	}
+
+	// Último superadmin não sai.
+	if err := s.DeleteUser(ctx, root.ID); !errors.Is(err, ErrLastSuperadmin) {
+		t.Fatalf("remover o último superadmin: %v", err)
+	}
+
+	// Reset: senha temporária nova e sessões revogadas.
+	hash := bytes.Repeat([]byte{7}, 32)
+	if err := s.CreateSession(ctx, hash, dev.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetPassword(ctx, dev.ID, "h-novo", exp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UserBySession(ctx, hash); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a sessão deveria ter sido revogada: %v", err)
+	}
+
+	// Remover o usuário leva sessões e participações junto.
+	p := createProject(t, s, "demo")
+	if err := s.SetMember(ctx, p.ID, dev.ID, RoleDesenvolvedor); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := s.ListMembers(ctx, p.ID); err != nil || len(m) != 1 || m[0].Email != "dev@empresa.com" {
+		t.Fatalf("ListMembers = %+v, %v", m, err)
+	}
+	if err := s.DeleteUser(ctx, dev.ID); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := s.ListMembers(ctx, p.ID); len(m) != 0 {
+		t.Fatalf("participação sobrou: %+v", m)
+	}
+	if err := s.RemoveMember(ctx, p.ID, dev.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("RemoveMember de quem não é membro: %v", err)
+	}
+}
+
+// O reset no servidor (decisão 46) só vale para o único superadmin.
+func TestResetLoneSuperadminPassword(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	if err := openStore(t, url).Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, asAppRole(url))
+	exp := time.Now().Add(72 * time.Hour)
+	if _, err := s.CreateFirstSuperadmin(ctx, "root@empresa.com", "h"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateUser(ctx, "dev@empresa.com", "", "h", exp); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.ResetLoneSuperadminPassword(ctx, "dev@empresa.com", "x", exp); !errors.Is(err, ErrNotSuperadmin) {
+		t.Fatalf("usuário comum: %v", err)
+	}
+	if _, err := s.ResetLoneSuperadminPassword(ctx, "ninguem@empresa.com", "x", exp); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("inexistente: %v", err)
+	}
+	u, err := s.ResetLoneSuperadminPassword(ctx, "root@empresa.com", "h-novo", exp)
+	if err != nil {
+		t.Fatalf("único superadmin: %v", err)
+	}
+	if got, _ := s.UserByID(ctx, u.ID); got.PasswordHash != "h-novo" || got.TempPasswordExpiresAt == nil {
+		t.Fatalf("depois do reset: %+v", got)
+	}
+
+	// Com um segundo superadmin, o reset deve ser feito por ele, pela API.
+	if _, err := s.CreateUser(ctx, "super2@empresa.com", RoleSuperadmin, "h", exp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetLoneSuperadminPassword(ctx, "root@empresa.com", "x", exp); !errors.Is(err, ErrSuperadminExists) {
+		t.Fatalf("com outro superadmin: %v", err)
+	}
+}

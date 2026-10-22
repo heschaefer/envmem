@@ -71,6 +71,15 @@ func TestRouteRoleMatrix(t *testing.T) {
 		// No outro, o gestor do demo é só desenvolvedor.
 		{"PUT", "/v1/projects/outro/secrets/K_{ROLE}", `{"value":"v"}`, map[string]string{
 			"superadmin": ok, "admin": ok, "gestor": forbidden, "desenvolvedor": notFound, "de-fora": notFound}},
+		{"GET", "/v1/projects/demo/members", "", map[string]string{
+			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
+		{"GET", "/v1/users", "", map[string]string{
+			"superadmin": ok, "admin": forbidden, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": forbidden}},
+		{"POST", "/v1/users", `{"email":"novo-{role}@empresa.com","temp_password":"senha temporaria longa"}`, map[string]string{
+			"superadmin": ok, "admin": forbidden, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": forbidden}},
+		// Por último: depois do seal do superadmin, o cofre fica selado.
+		{"POST", "/v1/seal", "", map[string]string{
+			"superadmin": ok, "admin": forbidden, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": forbidden}},
 	}
 
 	for _, tt := range tests {

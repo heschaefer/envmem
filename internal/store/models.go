@@ -17,6 +17,11 @@ var (
 	// ErrSuperadminExists indica que já existe um superadmin, então o
 	// create-superadmin (só para o primeiro) não roda.
 	ErrSuperadminExists = errors.New("store: já existe um superadmin")
+	// ErrLastSuperadmin indica uma tentativa de remover o último superadmin.
+	ErrLastSuperadmin = errors.New("store: é o último superadmin")
+	// ErrNotSuperadmin indica que o usuário não é superadmin (reset-password
+	// no servidor só vale para superadmin).
+	ErrNotSuperadmin = errors.New("store: o usuário não é superadmin")
 )
 
 // Papéis globais. Um usuário sem papel global tem GlobalRole vazio (NULL no

@@ -28,6 +28,8 @@ func main() {
 			os.Exit(cmdMigrate())
 		case "create-superadmin":
 			os.Exit(cmdSuperadmin(os.Args[2:]))
+		case "reset-password":
+			os.Exit(cmdResetPassword(os.Args[2:]))
 		}
 	}
 

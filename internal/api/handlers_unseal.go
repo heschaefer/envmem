@@ -79,3 +79,16 @@ func (s *server) initVault(r *http.Request, key []byte) (store.VaultMeta, error)
 	s.logger.Info("cofre inicializado: valor de verificação criado")
 	return meta, nil
 }
+
+// handleSeal sela o cofre: a chave-mestra é zerada e descartada da memória,
+// e tudo o que precisa decifrar passa a responder 503 até o próximo unseal.
+// Só superadmin (a permissão é conferida na rota).
+func (s *server) handleSeal(w http.ResponseWriter, r *http.Request) {
+	if s.vault.Sealed() {
+		writeError(w, http.StatusConflict, "already_sealed", "o cofre já está selado")
+		return
+	}
+	s.vault.Seal()
+	s.logger.Info("cofre selado", "user_id", sessionFrom(r.Context()).user.ID)
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Sealed: true})
+}
