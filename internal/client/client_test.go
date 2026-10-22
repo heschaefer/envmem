@@ -43,7 +43,7 @@ func newServer(t *testing.T) *client.Client {
 		io.WriteString(w, `{"project":"demo","secrets":[{"key":"DB_PASSWORD","value":"x"}]}`)
 	})
 	mux.HandleFunc("GET /v1/projects", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"projects":[{"id":"1","name":"app-homo"},{"id":"2","name":"demo"}]}`)
+		io.WriteString(w, `{"projects":[{"id":"1","name":"app-homo","role":"gestor"},{"id":"2","name":"demo","role":"desenvolvedor"}]}`)
 	})
 	mux.HandleFunc("POST /v1/projects", func(w http.ResponseWriter, r *http.Request) {
 		var in struct{ Name string }
@@ -267,7 +267,7 @@ func TestProjects(t *testing.T) {
 	ctx := context.Background()
 
 	list, err := c.Projects(ctx)
-	if err != nil || len(list) != 2 || list[0].Name != "app-homo" {
+	if err != nil || len(list) != 2 || list[0].Name != "app-homo" || list[0].Role != "gestor" || list[1].Role != "desenvolvedor" {
 		t.Fatalf("Projects = %+v, %v", list, err)
 	}
 

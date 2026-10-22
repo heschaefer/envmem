@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"text/tabwriter"
 	"time"
 
 	"github.com/heschaefer/envmem/internal/client"
@@ -86,24 +87,26 @@ func cmdProjects(args []string) int {
 	return 0
 }
 
-// projectsList imprime um projeto por linha, só o nome, para que a saída
-// possa ser usada em scripts.
+// projectsList imprime um projeto por linha, com o papel de quem está
+// logado, em colunas alinhadas. Sem cabeçalho, para que a saída possa ser
+// usada em scripts (o nome não tem espaços, então awk '{print $1}' basta).
 func projectsList(ctx context.Context, c *client.Client, w io.Writer) error {
 	projects, err := c.Projects(ctx)
 	if err != nil {
 		return err
 	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, p := range projects {
-		fmt.Fprintln(w, p.Name)
+		fmt.Fprintf(tw, "%s\t%s\n", p.Name, p.Role)
 	}
-	return nil
+	return tw.Flush()
 }
 
 func projectsUsage(w io.Writer) {
 	fmt.Fprint(w, `Uso: envmem projects <ação> [opções] [NOME]
 
 Ações:
-  list           lista os projetos
+  list           lista os seus projetos, com o seu papel em cada um
   create NOME    cria um projeto (minúsculas, dígitos e hífen)
   delete NOME    remove um projeto sem segredos
 

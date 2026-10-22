@@ -127,8 +127,8 @@ func TestEndToEnd(t *testing.T) {
 		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
 	// 3. Lista os projetos pelo CLI e grava o segredo DB_PASSWORD no demo.
-	if _, stdout, _ := runEnvmem(t, "projects", "list"); stdout != "demo\n" {
-		t.Errorf("projects list: stdout = %q, quero %q", stdout, "demo\n")
+	if _, stdout, _ := runEnvmem(t, "projects", "list"); stdout != "demo  superadmin\n" {
+		t.Errorf("projects list: stdout = %q, quero %q", stdout, "demo  superadmin\n")
 	}
 	wantStatus(t, "PUT", http.StatusCreated,
 		request(t, hc, http.MethodPut, url+"/v1/projects/demo/secrets/DB_PASSWORD", `{"value":"`+value+`"}`))
@@ -182,8 +182,8 @@ func TestEndToEnd(t *testing.T) {
 	if _, stdout, _ := runEnvmem(t, projects("delete", "vazio")...); stdout != "projeto vazio removido\n" {
 		t.Errorf("delete vazio: stdout = %q", stdout)
 	}
-	if _, stdout, _ := runEnvmem(t, projects("list")...); stdout != "demo\n" {
-		t.Errorf("list depois dos deletes: stdout = %q, quero %q", stdout, "demo\n")
+	if _, stdout, _ := runEnvmem(t, projects("list")...); stdout != "demo  superadmin\n" {
+		t.Errorf("list depois dos deletes: stdout = %q, quero %q", stdout, "demo  superadmin\n")
 	}
 
 	_, _, stderr, code = execEnvmem(t, projects("delete", "vazio")...)
