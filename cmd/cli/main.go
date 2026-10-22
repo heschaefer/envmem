@@ -49,6 +49,9 @@ Subcomandos:
   projects   lista, cria e remove projetos
   help       mostra esta ajuda
 
+O login grava o servidor e a CA em ~/.config/envmem/config.json; nos
+outros comandos, --servidor e --ca só são necessários para sobrescrevê-los.
+
 Exemplos:
   envmem login --servidor https://localhost:8080 --ca certs/ca.crt voce@empresa.com
   envmem projects create demo

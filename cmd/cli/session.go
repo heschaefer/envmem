@@ -40,35 +40,41 @@ func tokenPath() (string, error) {
 	return filepath.Join(dir, "token"), nil
 }
 
-// saveToken grava o token. O arquivo é criado já com permissão 600 (o
-// os.CreateTemp cria assim), num nome temporário na mesma pasta, e só
-// depois renomeado: não existe instante em que o token esteja num arquivo
-// com permissão mais aberta, nem um arquivo pela metade se algo falhar.
+// saveToken grava o token, com permissão 600 (ver writePrivateFile).
 func saveToken(token string) error {
 	path, err := tokenPath()
 	if err != nil {
 		return err
 	}
-	// 700: além do arquivo, a pasta também só é acessível pelo usuário.
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("criar %s: %w", filepath.Dir(path), err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".token-*")
-	if err != nil {
-		return fmt.Errorf("gravar o token: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // sem efeito depois do rename
-	if _, err := tmp.WriteString(token + "\n"); err != nil {
-		tmp.Close()
-		return fmt.Errorf("gravar o token: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("gravar o token: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := writePrivateFile(path, []byte(token+"\n")); err != nil {
 		return fmt.Errorf("gravar o token: %w", err)
 	}
 	return nil
+}
+
+// writePrivateFile grava data em path. O arquivo é criado já com permissão
+// 600 (o os.CreateTemp cria assim), num nome temporário na mesma pasta, e
+// só depois renomeado: não existe instante em que o conteúdo esteja num
+// arquivo com permissão mais aberta, nem um arquivo pela metade se algo
+// falhar.
+func writePrivateFile(path string, data []byte) error {
+	// 700: além do arquivo, a pasta também só é acessível pelo usuário.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // sem efeito depois do rename
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // loadToken lê o token gravado. Como o ssh faz com chaves privadas, recusa

@@ -43,7 +43,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 35 | Auditoria em tabela só de inserção | aceita para a Fatia 4 |
 | 36 | MFA para superadmin, admin e gestor | aceita para depois do núcleo |
 | 37 | Subcomandos diretos e modo interativo com huh | aceita (subcomandos); modo interativo na Fatia 5b |
-| 38 | Configuração do CLI em arquivo | aceita para a Fatia 5 |
+| 38 | Configuração do CLI em arquivo | aceita (Fatia 5) |
 | 39 | Prompt próprio do envmem no TCC II | aceita para o TCC II |
 | 40 | Shell supervisionado | descartada |
 | 41 | Painel web | descartada (fora do escopo) |
@@ -492,13 +492,13 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 ### 38. Configuração do CLI em arquivo
 
-**Status:** aceita para a Fatia 5
+**Status:** aceita (Fatia 5)
 
 **Contexto:** repetir o endereço do servidor e a CA em todo comando é inconveniente.
 
 **Decisão:** o `envmem login` grava o endereço do servidor e o caminho do certificado da CA em `~/.config/envmem/config.json`. As flags `--servidor` e `--ca` continuam valendo como sobrescrita.
 
-**Consequências:** o arquivo não guarda segredos nem o token, que fica em arquivo próprio (decisão 4).
+**Consequências:** o arquivo não guarda segredos nem o token, que fica em arquivo próprio (decisão 4). Ordem de precedência: flag informada, depois o arquivo, depois `https://localhost:8080`; `--ca ''` volta às CAs do sistema mesmo com uma CA no arquivo. O arquivo só é gravado depois de um login aceito, para que um endereço errado não substitua uma configuração que funcionava, e o caminho da CA é gravado como absoluto, porque o CLI roda de qualquer pasta. O `logout` não apaga o arquivo. Embora não seja secreto, quem altera o arquivo aponta o CLI para outro servidor, que receberia o token: por isso ele é gravado com permissão 600 e, como o ssh faz com o `~/.ssh/config`, o CLI recusa o arquivo se outros usuários puderem escrever nele.
 
 ### 39. Prompt próprio do envmem no TCC II
 
