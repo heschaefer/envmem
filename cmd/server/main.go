@@ -19,9 +19,14 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "keygen" {
-		cmdKeygen()
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "keygen":
+			cmdKeygen()
+			return
+		case "migrate":
+			os.Exit(cmdMigrate())
+		}
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -41,9 +46,9 @@ func main() {
 	}
 }
 
-// serve conecta ao banco, aplica as migrações, sobe o servidor HTTPS (só
-// TLS 1.3) e o encerra de forma ordenada ao receber SIGINT (Ctrl+C) ou
-// SIGTERM.
+// serve conecta ao banco, confere a versão e os privilégios do usuário,
+// sobe o servidor HTTPS (só TLS 1.3) e o encerra de forma ordenada ao
+// receber SIGINT (Ctrl+C) ou SIGTERM.
 func serve(logger *slog.Logger, cfg config.Server) error {
 	// O certificado é carregado antes do banco: com arquivo errado, o
 	// servidor nem chega a conectar.
@@ -60,10 +65,21 @@ func serve(logger *slog.Logger, cfg config.Server) error {
 		return err
 	}
 	defer st.Close()
-	if err := st.Migrate(startCtx); err != nil {
+	// O servidor não migra (decisão 42): se o banco estiver atrasado em
+	// relação ao binário, não sobe, em vez de rodar com estrutura velha.
+	if err := st.CheckMigrated(startCtx); errors.Is(err, store.ErrPendingMigrations) {
+		return errors.New("o banco tem migrações pendentes: rode envmem-server migrate (com DATABASE_MIGRATE_URL) antes de subir o servidor")
+	} else if err != nil {
 		return err
 	}
-	logger.Info("banco conectado e migrações aplicadas")
+	// Com o dono das tabelas, a auditoria "só de inserção" seria falsa: o
+	// dono consegue devolver a si mesmo o DELETE. Melhor não subir.
+	if err := st.CheckRestricted(startCtx); errors.Is(err, store.ErrPrivilegedUser) {
+		return errors.New("DATABASE_URL usa um usuário que pode alterar ou apagar a auditoria (dono das tabelas ou superusuário); use o usuário restrito envmem_app")
+	} else if err != nil {
+		return err
+	}
+	logger.Info("banco conectado: versão atual e usuário restrito")
 
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,

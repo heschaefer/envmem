@@ -53,7 +53,7 @@ Um **gerenciador de segredos auto-hospedado** para equipes de desenvolvimento. O
 **Servidor**
 - HTTP: `net/http` com os padrões do Go 1.22 (`"GET /v1/projects/{project}/secrets"`, `r.PathValue`)
 - JSON: `encoding/json`
-- Configuração: variáveis de ambiente (`ENVMEM_LISTEN_ADDR`, `DATABASE_URL`, caminhos dos certificados), com flags para sobrescrever
+- Configuração: variáveis de ambiente (`ENVMEM_LISTEN_ADDR`, `DATABASE_URL`, caminhos dos certificados), com flags para sobrescrever. `DATABASE_URL` é o usuário restrito `envmem_app`; `DATABASE_MIGRATE_URL` é o dono das tabelas, usado só por `envmem-server migrate` (as duas sem flag)
 - Logs: `log/slog` em JSON
 - TLS: `crypto/tls`, **só TLS 1.3** (`MinVersion: tls.VersionTLS13`). Certificados gerados por `scripts/gen-certs.sh` com `openssl`: uma CA própria e o certificado do servidor assinado por ela
 - Banco: PostgreSQL 18 via `pgx/v5` e `pgxpool`, com **SQL escrito à mão** (sem ORM, sem sqlc)
@@ -73,19 +73,19 @@ Um **gerenciador de segredos auto-hospedado** para equipes de desenvolvimento. O
 
 **Testes e qualidade**
 - `testing` e `net/http/httptest`
-- Testes que precisam do banco ficam marcados com `//go:build integration` e usam o PostgreSQL do `docker-compose`. Rodar com `go test -tags integration ./...`
+- Testes que precisam do banco ficam marcados com `//go:build integration` e usam o PostgreSQL do `docker-compose`. Rodar com `go test -tags integration ./...`. Eles usam `DATABASE_MIGRATE_URL` (dono) para criar schemas temporários, e o `TestEndToEnd` opera como `envmem_app`
 - `make check`: `gofmt -l`, `go vet` e `govulncheck`
 
 **Ambiente de desenvolvimento**
 - **Dev container** sobre o **Docker Engine instalado dentro do WSL2** (Ubuntu). Sem Docker Desktop (PC da empresa)
 - O VS Code abre a pasta do projeto (que fica no sistema de arquivos do WSL, em `~/tcc/envmem`) dentro do container `dev` com a extensão Dev Containers
 - `.devcontainer/Dockerfile`: imagem `golang:1.26`, `CGO_ENABLED=0`, `psql`, `openssl`, `make`, goose, govulncheck e Claude Code; usuário comum `dev` (não root)
-- `docker-compose.yml` na raiz: serviços `db` (PostgreSQL 18) e `dev`. O banco sobe junto com o dev container; dentro do container, o host do banco é `db` e a URL já vem em `DATABASE_URL`
+- `docker-compose.yml` na raiz: serviços `db` (PostgreSQL 18) e `dev`. O banco sobe junto com o dev container; dentro do container, o host do banco é `db`, e as URLs já vêm em `DATABASE_URL` (envmem_app) e `DATABASE_MIGRATE_URL` (dono). `scripts/db-init/` cria o `envmem_app` na primeira subida com volume vazio (num volume existente, `make db-roles`)
 - Na imagem `postgres:18`, o volume de dados é montado em `/var/lib/postgresql` (e não em `/var/lib/postgresql/data`)
 - Volumes nomeados guardam o banco (`pgdata`), o cache de módulos Go (`gomod`) e o login do Claude Code (`claude`), que sobrevivem à recriação do container
 - O container é descartável; o código não. **Fazer push para o GitHub ao fim de cada passo**
 - No Windows, o `syscall.Exec` existe, mas sempre devolve erro ("not supported by windows"): o CLI compila, porém o `run` não funciona. Tudo (servidor, CLI e demonstração) roda no terminal do container
-- `Makefile` com os alvos `build`, `certs`, `run-server`, `test`, `test-integration` e `check` (o banco já está de pé, não precisa de `db-up` dentro do container)
+- `Makefile` com os alvos `build`, `certs`, `db-roles`, `migrate`, `run-server`, `test`, `test-integration` e `check` (o banco já está de pé, não precisa de `db-up` dentro do container)
 - Git, branch principal `main`. Sem licença por enquanto
 - Diagramas: C4 no draw.io (`docs/diagramas/`); diagramas de sequência em Mermaid, dentro dos `.md`
 
@@ -147,7 +147,7 @@ Um **gerenciador de segredos auto-hospedado** para equipes de desenvolvimento. O
 ## Mapa de arquivos
 
 ```
-cmd/server/{main, cmd_keygen, cmd_superadmin}.go
+cmd/server/{main, cmd_keygen, cmd_migrate, cmd_superadmin}.go
 cmd/cli/{main, cmd_login, cmd_logout, cmd_run, cmd_secrets, cmd_projects, cmd_users, session, config, inject, interactive}.go
 internal/config/{config, tls}.go
 internal/vault/{seal, envelope, keys}.go (+ testes)
@@ -158,7 +158,7 @@ internal/envname/envname.go (+ teste)
 internal/api/{router, errors, handlers_health, handlers_unseal, handlers_auth, handlers_users, handlers_projects, handlers_members, handlers_secrets, handlers_audit}.go
 internal/client/{client, auth, projects, secrets}.go
 migrations/*.sql (goose, numeradas: 00001_..., 00002_...)
-scripts/gen-certs.sh
+scripts/gen-certs.sh, scripts/db-init/01-envmem-app.sql
 docs/{arquitetura, decisoes, modelo-de-ameacas, modelo-de-dados}.md, docs/diagramas/, docs/evidencias/
 ```
 
@@ -207,7 +207,7 @@ Cada fatia entrega algo funcionando de ponta a ponta:
 5b. **Modo interativo** com huh
 6. **Meta (decisão 10):** credenciais dinâmicas para PostgreSQL
 
-**Estado atual (20/10/2026):** Fatias 1, 2 e 3 prontas, com push no GitHub. O roteiro atual da demonstração, com comandos e saída registrada, está em `docs/evidencias/roteiro-fatia-3.md` (o das Fatias 1 e 2 fica como registro da apresentação de 17/10), e roda automaticamente em `TestEndToEnd` (`make test-integration`). Próximo: Fatia 4 (auth, RBAC e auditoria), sem decisões de arquitetura pendentes, em seis passos (um commit e push por passo): (1) banco: usuários dono e `envmem_app`, `envmem-server migrate`, recusa de subir com migração pendente, migração 00003 (`users`, `sessions`, `members`, `audit_events`, lixeira em `secrets`) e privilégios; (2) usuários e senhas: argon2id, `create-superadmin`, senha temporária; (3) sessões e login: token, rotas de auth e troca de senha, middleware com rotas públicas, limite com 429; (4) RBAC: matriz, rota com permissão obrigatória, 401/403/404, membros, usuários, `GET /projects` com papel, `POST /seal`, `meta`, segredo isolado, lixeira (remover, restaurar, excluir definitivamente), retenção de 10 versões; (5) auditoria com falha fechada; (6) CLI `login` e `logout` com token em arquivo, ponta a ponta e roteiro. Detalhes a perguntar na implementação: quem gera a senha temporária e se ela vence (decisão 43), números do limite de login (45), `PUT` em chave na lixeira e prazo da lixeira (11).
+**Estado atual (22/10/2026):** Fatia 4, passo 1 (banco) pronto: `envmem_app`, `envmem-server migrate`, migração 00003 e conferências na subida (migração pendente e usuário com privilégios demais). Fatias 1, 2 e 3 prontas, com push no GitHub. O roteiro atual da demonstração, com comandos e saída registrada, está em `docs/evidencias/roteiro-fatia-3.md` (o das Fatias 1 e 2 fica como registro da apresentação de 17/10), e roda automaticamente em `TestEndToEnd` (`make test-integration`). Próximo: Fatia 4 (auth, RBAC e auditoria), sem decisões de arquitetura pendentes, em seis passos (um commit e push por passo): (1) banco: usuários dono e `envmem_app`, `envmem-server migrate`, recusa de subir com migração pendente, migração 00003 (`users`, `sessions`, `members`, `audit_events`, lixeira em `secrets`) e privilégios; (2) usuários e senhas: argon2id, `create-superadmin`, senha temporária; (3) sessões e login: token, rotas de auth e troca de senha, middleware com rotas públicas, limite com 429; (4) RBAC: matriz, rota com permissão obrigatória, 401/403/404, membros, usuários, `GET /projects` com papel, `POST /seal`, `meta`, segredo isolado, lixeira (remover, restaurar, excluir definitivamente), retenção de 10 versões; (5) auditoria com falha fechada; (6) CLI `login` e `logout` com token em arquivo, ponta a ponta e roteiro. Detalhes a perguntar na implementação: quem gera a senha temporária e se ela vence (decisão 43), números do limite de login (45), `PUT` em chave na lixeira e prazo da lixeira (11).
 
 **Meta para 17/10 (apresentação ao orientador): Fatias 1 e 2.** Simplificações permitidas até lá: projeto como coluna de texto na tabela `secrets` (sem tabela `projects`), sem autenticação, seal só por reinício. Roteiro da demonstração:
 1. Servidor sobe selado: `/v1/health` mostra `sealed: true`, e `GET` de segredos devolve 503
