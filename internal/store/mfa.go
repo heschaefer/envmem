@@ -23,15 +23,18 @@ type TOTP struct {
 	// LastStep é o último passo de 30 segundos aceito (cada código vale
 	// uma vez).
 	LastStep int64
+	// Failures conta os códigos errados seguidos desde o último certo; no
+	// limite (auth.MFAMaxFailures), o MFA trava até o reset.
+	Failures int
 }
 
 // TOTPByUser devolve o MFA do usuário, ou ErrNotFound se ele não tiver.
 func (s *Store) TOTPByUser(ctx context.Context, userID string) (TOTP, error) {
 	const q = `
-		SELECT user_id, ciphertext, nonce, wrapped_dek, dek_nonce, confirmed_at, last_step
+		SELECT user_id, ciphertext, nonce, wrapped_dek, dek_nonce, confirmed_at, last_step, failures
 		FROM user_totp WHERE user_id = $1`
 	var t TOTP
-	err := s.db.QueryRow(ctx, q, userID).Scan(&t.UserID, &t.Ciphertext, &t.Nonce, &t.WrappedDEK, &t.DEKNonce, &t.ConfirmedAt, &t.LastStep)
+	err := s.db.QueryRow(ctx, q, userID).Scan(&t.UserID, &t.Ciphertext, &t.Nonce, &t.WrappedDEK, &t.DEKNonce, &t.ConfirmedAt, &t.LastStep, &t.Failures)
 	if errors.Is(err, pgx.ErrNoRows) || isInvalidText(err) {
 		return TOTP{}, ErrNotFound
 	}
@@ -52,7 +55,7 @@ func (s *Store) StartTOTP(ctx context.Context, t TOTP) error {
 		ON CONFLICT (user_id) DO UPDATE
 		SET ciphertext = excluded.ciphertext, nonce = excluded.nonce,
 		    wrapped_dek = excluded.wrapped_dek, dek_nonce = excluded.dek_nonce,
-		    created_at = now()
+		    failures = 0, created_at = now()
 		WHERE user_totp.confirmed_at IS NULL`
 	tag, err := s.db.Exec(ctx, q, t.UserID, t.Ciphertext, t.Nonce, t.WrappedDEK, t.DEKNonce)
 	if err != nil {
@@ -69,7 +72,7 @@ func (s *Store) StartTOTP(ctx context.Context, t TOTP) error {
 // confirmado, ou resetado no meio).
 func (s *Store) ConfirmTOTP(ctx context.Context, userID string, step int64) error {
 	const q = `
-		UPDATE user_totp SET confirmed_at = now(), last_step = $2
+		UPDATE user_totp SET confirmed_at = now(), last_step = $2, failures = 0
 		WHERE user_id = $1 AND confirmed_at IS NULL`
 	tag, err := s.db.Exec(ctx, q, userID, step)
 	if err != nil {
@@ -83,12 +86,14 @@ func (s *Store) ConfirmTOTP(ctx context.Context, userID string, step int64) erro
 
 // UseTOTPStep marca o passo como usado, de forma atômica: só grava se ele
 // for posterior ao último usado. Assim, dois logins ao mesmo tempo com o
-// mesmo código não passam os dois: o segundo recebe ErrConflict.
-func (s *Store) UseTOTPStep(ctx context.Context, userID string, step int64) error {
+// mesmo código não passam os dois: o segundo recebe ErrConflict. Um código
+// certo zera a contagem de falhas, desde que o MFA não esteja travado: com
+// a trava, nem um código certo passa (só o reset destrava).
+func (s *Store) UseTOTPStep(ctx context.Context, userID string, step int64, maxFailures int) error {
 	const q = `
-		UPDATE user_totp SET last_step = $2
-		WHERE user_id = $1 AND confirmed_at IS NOT NULL AND last_step < $2`
-	tag, err := s.db.Exec(ctx, q, userID, step)
+		UPDATE user_totp SET last_step = $2, failures = 0
+		WHERE user_id = $1 AND confirmed_at IS NOT NULL AND last_step < $2 AND failures < $3`
+	tag, err := s.db.Exec(ctx, q, userID, step, maxFailures)
 	if err != nil {
 		return fmt.Errorf("store: usar código do MFA: %w", err)
 	}
@@ -96,6 +101,25 @@ func (s *Store) UseTOTPStep(ctx context.Context, userID string, step int64) erro
 		return ErrConflict
 	}
 	return nil
+}
+
+// FailTOTP conta um código errado num MFA confirmado e devolve o total de
+// falhas seguidas. ErrNotFound se não houver MFA confirmado (no cadastro,
+// um código errado não indica ataque: quem cadastra acabou de ler o QR).
+func (s *Store) FailTOTP(ctx context.Context, userID string) (int, error) {
+	const q = `
+		UPDATE user_totp SET failures = failures + 1
+		WHERE user_id = $1 AND confirmed_at IS NOT NULL
+		RETURNING failures`
+	var n int
+	err := s.db.QueryRow(ctx, q, userID).Scan(&n)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: contar falha do MFA: %w", err)
+	}
+	return n, nil
 }
 
 // DeleteTOTP apaga o MFA do usuário (reset). ErrNotFound se não havia.

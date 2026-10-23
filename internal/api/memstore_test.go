@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -17,16 +18,18 @@ import (
 // o mesmo comportamento do store real (versões, ErrNotFound, ErrConflict,
 // ErrProjectNotEmpty, vault_meta gravado uma única vez).
 type memStore struct {
-	mu       sync.Mutex
-	now      func() time.Time // o mesmo relógio do roteador
-	meta     *store.VaultMeta
-	projects []store.Project
-	nextID   int
-	secrets  []store.SecretRow
-	users    []store.User
-	sessions []memSession
-	members  map[[2]string]string // (projeto, usuário) -> papel
-	audit    []store.AuditEvent
+	mu         sync.Mutex
+	now        func() time.Time // o mesmo relógio do roteador
+	meta       *store.VaultMeta
+	projects   []store.Project
+	nextID     int
+	secrets    []store.SecretRow
+	users      []store.User
+	sessions   []memSession
+	members    map[[2]string]string // (projeto, usuário) -> papel
+	audit      []store.AuditEvent
+	totp       map[string]store.TOTP // usuário -> MFA
+	challenges []memChallenge
 	// failAudit simula a falha ao gravar a auditoria (para testar a falha
 	// fechada).
 	failAudit bool
@@ -64,18 +67,21 @@ func (m *memStore) ListAudit(ctx context.Context, f store.AuditFilter) ([]store.
 func (m *memStore) InTx(ctx context.Context, fn func(tx Store) error) error {
 	m.mu.Lock()
 	snap := memSnapshot{
-		projects: append([]store.Project(nil), m.projects...),
-		secrets:  append([]store.SecretRow(nil), m.secrets...),
-		users:    append([]store.User(nil), m.users...),
-		sessions: append([]memSession(nil), m.sessions...),
-		members:  maps.Clone(m.members),
-		audit:    append([]store.AuditEvent(nil), m.audit...),
+		projects:   append([]store.Project(nil), m.projects...),
+		secrets:    append([]store.SecretRow(nil), m.secrets...),
+		users:      append([]store.User(nil), m.users...),
+		sessions:   append([]memSession(nil), m.sessions...),
+		members:    maps.Clone(m.members),
+		audit:      append([]store.AuditEvent(nil), m.audit...),
+		totp:       maps.Clone(m.totp),
+		challenges: append([]memChallenge(nil), m.challenges...),
 	}
 	m.mu.Unlock()
 	if err := fn(m); err != nil {
 		m.mu.Lock()
 		m.projects, m.secrets, m.users, m.sessions, m.members, m.audit =
 			snap.projects, snap.secrets, snap.users, snap.sessions, snap.members, snap.audit
+		m.totp, m.challenges = snap.totp, snap.challenges
 		m.mu.Unlock()
 		return err
 	}
@@ -83,12 +89,14 @@ func (m *memStore) InTx(ctx context.Context, fn func(tx Store) error) error {
 }
 
 type memSnapshot struct {
-	projects []store.Project
-	secrets  []store.SecretRow
-	users    []store.User
-	sessions []memSession
-	members  map[[2]string]string
-	audit    []store.AuditEvent
+	projects   []store.Project
+	secrets    []store.SecretRow
+	users      []store.User
+	sessions   []memSession
+	members    map[[2]string]string
+	audit      []store.AuditEvent
+	totp       map[string]store.TOTP
+	challenges []memChallenge
 }
 
 // actions devolve as ações registradas na auditoria, em ordem.
@@ -516,4 +524,131 @@ func (m *memStore) ListTrash(ctx context.Context, projectID string) ([]store.Tra
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil
+}
+
+// memChallenge é um desafio do login em duas etapas.
+type memChallenge struct {
+	tokenHash []byte
+	userID    string
+	failures  int
+	expiresAt time.Time
+}
+
+func (m *memStore) ManagesAnyProject(ctx context.Context, userID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, role := range m.members {
+		if k[1] == userID && role == store.RoleGestor {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *memStore) TOTPByUser(ctx context.Context, userID string) (store.TOTP, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.totp[userID]
+	if !ok {
+		return store.TOTP{}, store.ErrNotFound
+	}
+	return t, nil
+}
+
+func (m *memStore) StartTOTP(ctx context.Context, t store.TOTP) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if old, ok := m.totp[t.UserID]; ok && old.ConfirmedAt != nil {
+		return store.ErrConflict
+	}
+	if m.totp == nil {
+		m.totp = map[string]store.TOTP{}
+	}
+	t.ConfirmedAt, t.LastStep, t.Failures = nil, 0, 0
+	m.totp[t.UserID] = t
+	return nil
+}
+
+func (m *memStore) ConfirmTOTP(ctx context.Context, userID string, step int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.totp[userID]
+	if !ok || t.ConfirmedAt != nil {
+		return store.ErrConflict
+	}
+	now := m.now()
+	t.ConfirmedAt, t.LastStep, t.Failures = &now, step, 0
+	m.totp[userID] = t
+	return nil
+}
+
+func (m *memStore) UseTOTPStep(ctx context.Context, userID string, step int64, maxFailures int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.totp[userID]
+	if !ok || t.ConfirmedAt == nil || t.LastStep >= step || t.Failures >= maxFailures {
+		return store.ErrConflict
+	}
+	t.LastStep, t.Failures = step, 0
+	m.totp[userID] = t
+	return nil
+}
+
+func (m *memStore) FailTOTP(ctx context.Context, userID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.totp[userID]
+	if !ok || t.ConfirmedAt == nil {
+		return 0, store.ErrNotFound
+	}
+	t.Failures++
+	m.totp[userID] = t
+	return t.Failures, nil
+}
+
+func (m *memStore) DeleteTOTP(ctx context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.totp[userID]; !ok {
+		return store.ErrNotFound
+	}
+	delete(m.totp, userID)
+	return nil
+}
+
+func (m *memStore) CreateMFAChallenge(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.challenges = append(m.challenges, memChallenge{tokenHash: tokenHash, userID: userID, expiresAt: expiresAt})
+	return nil
+}
+
+func (m *memStore) MFAChallenge(ctx context.Context, tokenHash []byte) (string, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.challenges {
+		if bytes.Equal(c.tokenHash, tokenHash) && m.now().Before(c.expiresAt) {
+			return c.userID, c.failures, nil
+		}
+	}
+	return "", 0, store.ErrNotFound
+}
+
+func (m *memStore) FailMFAChallenge(ctx context.Context, tokenHash []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.challenges {
+		if bytes.Equal(m.challenges[i].tokenHash, tokenHash) {
+			m.challenges[i].failures++
+			return m.challenges[i].failures, nil
+		}
+	}
+	return 0, store.ErrNotFound
+}
+
+func (m *memStore) DeleteMFAChallenge(ctx context.Context, tokenHash []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.challenges = slices.DeleteFunc(m.challenges, func(c memChallenge) bool { return bytes.Equal(c.tokenHash, tokenHash) })
+	return nil
 }

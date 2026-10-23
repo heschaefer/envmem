@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base32"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -97,17 +100,43 @@ func TestEndToEnd(t *testing.T) {
 	key := vault.EncodeKey(vault.GenerateKey())
 	const value = "S3nh@-de-ponta-a-ponta"
 
-	// 0. Sem sessão, nada além das rotas públicas. O envmem login grava o
-	// token em ~/.config/envmem/token e o servidor e a CA em
-	// ~/.config/envmem/config.json, que os próximos comandos usam sem
-	// precisar de --servidor e --ca.
+	// 0. Sem sessão, nada além das rotas públicas. O superadmin precisa de
+	// MFA (decisão 36), e o segredo do TOTP é cifrado pelo cofre: com o
+	// servidor selado, nem a senha certa abre sessão.
 	url := startServer()
 	wantStatus(t, "GET sem sessão", http.StatusUnauthorized,
 		request(t, hc, http.MethodGet, url+"/v1/projects", ""))
-	if _, _, stderr, code := execEnvmemIn(t, "senha errada mas longa\n", "login", "--servidor", url, "--ca", ca, "--senha-stdin", email); code != 1 || !strings.Contains(stderr, "invalid_credentials") {
+	login := func(stdin string) (stdout, stderr string, code int) {
+		_, stdout, stderr, code = execEnvmemIn(t, stdin, "login", "--servidor", url, "--ca", ca, "--senha-stdin", email)
+		return stdout, stderr, code
+	}
+	if _, stderr, code := login("senha errada mas longa\n"); code != 1 || !strings.Contains(stderr, "invalid_credentials") {
 		t.Errorf("login com senha errada: código %d, stderr %q", code, stderr)
 	}
-	runEnvmemIn(t, password+"\n", "login", "--servidor", url, "--ca", ca, "--senha-stdin", email)
+	if _, stderr, code := login(password + "\n"); code != 1 || !strings.Contains(stderr, "sealed") {
+		t.Errorf("login selado: código %d, stderr %q; quero recusa por cofre selado", code, stderr)
+	}
+
+	// 1. Unseal com a chave gerada.
+	wantStatus(t, "unseal", http.StatusOK,
+		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
+
+	// 2. Primeiro login do superadmin: o MFA ainda não foi cadastrado, e o
+	// cadastro (QR code e chave) precisa de um terminal; pelo pipe, o CLI
+	// recusa. O teste cadastra pela API, como o CLI faria no terminal.
+	if _, stderr, code := login(password + "\n"); code != 1 || !strings.Contains(stderr, "num terminal") {
+		t.Errorf("cadastro do MFA pelo pipe: código %d, stderr %q", code, stderr)
+	}
+	secret := enrollMFA(t, hc, url, email, password)
+	// Com o MFA cadastrado, o login pelo pipe lê a senha e o código, uma
+	// linha cada. Código errado: recusado, sem nova tentativa pelo pipe.
+	if _, stderr, code := login(password + "\n" + wrongTOTP(secret) + "\n"); code != 1 || !strings.Contains(stderr, "invalid_mfa_code") {
+		t.Errorf("login com código errado: código %d, stderr %q", code, stderr)
+	}
+	// O código do passo atual já foi usado no cadastro (cada um vale uma
+	// vez); o do passo seguinte é aceito pela tolerância de um passo.
+	runEnvmemIn(t, password+"\n"+auth.TOTPCode(secret, time.Now().Add(30*time.Second))+"\n",
+		"login", "--servidor", url, "--ca", ca, "--senha-stdin", email)
 	if token, err = loadToken(); err != nil {
 		t.Fatalf("o login deveria ter gravado o token: %v", err)
 	}
@@ -115,17 +144,10 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("config.json = %+v, %v; quero servidor %s e CA %s", cfg, err, url, ca)
 	}
 
-	// 1. Cria o projeto demo pelo CLI (não depende do cofre). O servidor
-	// subiu selado: GET de segredos devolve 503.
+	// Projeto demo criado pelo CLI.
 	if _, stdout, _ := runEnvmem(t, "projects", "create", "demo"); stdout != "projeto demo criado\n" {
 		t.Errorf("projects create: stdout = %q", stdout)
 	}
-	wantStatus(t, "GET selado", http.StatusServiceUnavailable,
-		request(t, hc, http.MethodGet, url+"/v1/projects/demo/secrets", ""))
-
-	// 2. Unseal com a chave gerada.
-	wantStatus(t, "unseal", http.StatusOK,
-		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
 	// 3. Lista os projetos pelo CLI e grava o segredo DB_PASSWORD no demo,
 	// também pelo CLI.
@@ -436,4 +458,44 @@ func tempSchemaURL(t *testing.T) string {
 		sep = "&"
 	}
 	return url + sep + "search_path=" + schema
+}
+
+// enrollMFA cadastra o MFA de um usuário pela API, como o envmem login faz
+// num terminal (login, setup e o primeiro código), e devolve o segredo.
+func enrollMFA(t *testing.T, hc *http.Client, url, email, password string) []byte {
+	t.Helper()
+	resp := request(t, hc, http.MethodPost, url+"/v1/auth/login", `{"email":"`+email+`","password":"`+password+`"}`)
+	wantStatus(t, "login para cadastrar o MFA", http.StatusOK, resp)
+	var ch struct{ MFA, Challenge string }
+	if err := json.NewDecoder(resp.Body).Decode(&ch); err != nil || ch.MFA != "setup" {
+		t.Fatalf("login: %+v, %v; quero desafio de cadastro", ch, err)
+	}
+	resp = request(t, hc, http.MethodPost, url+"/v1/auth/mfa/setup", `{"challenge":"`+ch.Challenge+`"}`)
+	wantStatus(t, "setup do MFA", http.StatusOK, resp)
+	var setup struct{ Secret string }
+	if err := json.NewDecoder(resp.Body).Decode(&setup); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(setup.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, "confirmar o MFA", http.StatusOK, request(t, hc, http.MethodPost, url+"/v1/auth/mfa",
+		`{"challenge":"`+ch.Challenge+`","code":"`+auth.TOTPCode(secret, time.Now())+`"}`))
+	return secret
+}
+
+// wrongTOTP devolve um código que não vale em nenhum dos passos aceitos
+// agora (o atual e os vizinhos).
+func wrongTOTP(secret []byte) string {
+	valid := map[string]bool{}
+	for _, d := range []time.Duration{-30 * time.Second, 0, 30 * time.Second, 60 * time.Second} {
+		valid[auth.TOTPCode(secret, time.Now().Add(d))] = true
+	}
+	for _, c := range []string{"000000", "111111", "222222"} {
+		if !valid[c] {
+			return c
+		}
+	}
+	return "333333"
 }

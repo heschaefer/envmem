@@ -85,10 +85,35 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Superadmin, admin e gestor precisam do código do MFA (decisão 36):
+	// a senha certa rende só um desafio, e a sessão sai na segunda etapa.
+	managesAny, err := s.store.ManagesAnyProject(r.Context(), user.ID)
+	if err != nil {
+		s.logger.Error("login: conferir se é gestor", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return
+	}
+	if auth.RequiresMFA(user.GlobalRole, managesAny) {
+		s.beginMFA(w, r, user)
+		return
+	}
+	s.createSession(w, r, user, nil)
+}
+
+// createSession abre a sessão e responde com o token. A sessão e o evento
+// de login entram na mesma transação (sem registro, não há sessão), junto
+// com o que before fizer (no MFA: marcar o código como usado e apagar o
+// desafio). Um ErrConflict de before vira código incorreto: é o segundo
+// uso do mesmo código, ou o MFA travou no meio.
+func (s *server) createSession(w http.ResponseWriter, r *http.Request, user store.User, before func(tx Store) error) {
 	token, hash := auth.NewToken()
 	expiresAt := s.now().Add(auth.SessionTTL)
-	// A sessão e o evento entram juntos: sem registro, não há sessão.
-	err = s.store.InTx(r.Context(), func(tx Store) error {
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		if before != nil {
+			if err := before(tx); err != nil {
+				return err
+			}
+		}
 		if err := tx.CreateSession(r.Context(), hash, user.ID, expiresAt); err != nil {
 			return err
 		}
@@ -97,6 +122,10 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, errAudit) {
 		s.logger.Error("auditoria: registrar login", "err", err)
 		writeAuditFailed(w)
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		writeInvalidMFACode(w)
 		return
 	}
 	if err != nil {

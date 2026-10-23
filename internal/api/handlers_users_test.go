@@ -11,12 +11,12 @@ import (
 func TestCreateUserWithTempPassword(t *testing.T) {
 	e := newTestEnv(t)
 	rec := e.do(t, http.MethodPost, "/v1/users",
-		`{"email":"Nova@Empresa.com","global_role":"admin","temp_password":"temporaria bem longa"}`)
+		`{"email":"Nova@Empresa.com","global_role":"","temp_password":"temporaria bem longa"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("criar: %d %s", rec.Code, rec.Body.String())
 	}
 	u := decode[userItem](t, rec)
-	if u.Email != "nova@empresa.com" || u.GlobalRole != "admin" || !u.TempPassword {
+	if u.Email != "nova@empresa.com" || u.GlobalRole != "" || !u.TempPassword {
 		t.Fatalf("usuário = %+v", u)
 	}
 
@@ -27,7 +27,7 @@ func TestCreateUserWithTempPassword(t *testing.T) {
 	e.clock.add(auth.TempPasswordTTL)
 	wantError(t, e.login(t, "nova@empresa.com", "temporaria bem longa"), http.StatusUnauthorized, "temp_password_expired")
 	// 72 horas depois, a sessão (8 horas) do superadmin também venceu.
-	e.token = e.tokenFor(t, "root@empresa.com", testPassword)
+	e.token = e.sessionFor(t, "root@empresa.com")
 
 	// A listagem nunca mostra o hash.
 	body := e.do(t, http.MethodGet, "/v1/users", "").Body.String()

@@ -35,7 +35,7 @@ func newRBACEnv(t *testing.T) *rbacEnv {
 		if u.demoRole != "" {
 			e.store.setMember(demo.ID, created.ID, u.demoRole)
 		}
-		re.tokens[u.name] = e.tokenFor(t, email, testPassword)
+		re.tokens[u.name] = e.sessionFor(t, email)
 	}
 	// O gestor do demo é desenvolvedor no outro: o papel vale por projeto.
 	gestor, _ := e.store.UserByEmail(t.Context(), "gestor@empresa.com")

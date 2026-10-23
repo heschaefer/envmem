@@ -810,8 +810,12 @@ func TestMFA(t *testing.T) {
 		t.Fatalf("pendente = %+v, %v", got, err)
 	}
 	// Pendente não vale para o login: UseTOTPStep recusa.
-	if err := s.UseTOTPStep(ctx, u.ID, 100); !errors.Is(err, ErrConflict) {
+	if err := s.UseTOTPStep(ctx, u.ID, 100, 10); !errors.Is(err, ErrConflict) {
 		t.Errorf("passo com cadastro pendente: %v, quero ErrConflict", err)
+	}
+	// Código errado no cadastro não conta para a trava.
+	if _, err := s.FailTOTP(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("falha com cadastro pendente: %v, quero ErrNotFound", err)
 	}
 	if err := s.ConfirmTOTP(ctx, u.ID, 100); err != nil {
 		t.Fatal(err)
@@ -825,12 +829,29 @@ func TestMFA(t *testing.T) {
 
 	// Cada passo vale uma vez: o da confirmação já conta como usado.
 	for step, want := range map[int64]error{100: ErrConflict, 99: ErrConflict, 101: nil} {
-		if err := s.UseTOTPStep(ctx, u.ID, step); !errors.Is(err, want) {
+		if err := s.UseTOTPStep(ctx, u.ID, step, 10); !errors.Is(err, want) {
 			t.Errorf("UseTOTPStep(%d) = %v, quero %v", step, err, want)
 		}
 	}
-	if err := s.UseTOTPStep(ctx, u.ID, 101); !errors.Is(err, ErrConflict) {
+	if err := s.UseTOTPStep(ctx, u.ID, 101, 10); !errors.Is(err, ErrConflict) {
 		t.Error("o mesmo passo foi aceito duas vezes")
+	}
+
+	// Falhas seguidas: um código certo zera a contagem, mas, travado (no
+	// limite), nem um código certo passa.
+	for want := 1; want <= 3; want++ {
+		if n, err := s.FailTOTP(ctx, u.ID); err != nil || n != want {
+			t.Fatalf("FailTOTP = %d, %v; quero %d", n, err, want)
+		}
+	}
+	if err := s.UseTOTPStep(ctx, u.ID, 102, 3); !errors.Is(err, ErrConflict) {
+		t.Errorf("código certo com o MFA travado: %v, quero ErrConflict", err)
+	}
+	if err := s.UseTOTPStep(ctx, u.ID, 102, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.TOTPByUser(ctx, u.ID); got.Failures != 0 || got.LastStep != 102 {
+		t.Errorf("depois do código certo: falhas %d, passo %d", got.Failures, got.LastStep)
 	}
 
 	// Gestor de algum projeto precisa de MFA; membro só desenvolvedor, não.

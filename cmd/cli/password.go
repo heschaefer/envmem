@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -58,13 +57,30 @@ func readTwice(prompt, again, mismatch string) ([]byte, error) {
 	return first, nil
 }
 
-// readLine lê uma linha de r, sem o "\n" (nem o "\r" do Windows).
+// readLine lê uma linha de r, sem o "\n" (nem o "\r" do Windows). Lê um
+// byte por vez, de propósito: um leitor com buffer poderia consumir também
+// as linhas seguintes, e o login com --senha-stdin lê duas (a senha e,
+// com MFA, o código).
 func readLine(r io.Reader) ([]byte, error) {
-	line, err := bufio.NewReader(r).ReadBytes('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+	var line []byte
+	b := make([]byte, 1)
+	for {
+		n, err := r.Read(b)
+		if n == 1 {
+			if b[0] == '\n' {
+				break
+			}
+			line = append(line, b[0])
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			clear(line)
+			return nil, err
+		}
 	}
-	return bytes.TrimRight(line, "\r\n"), nil
+	return bytes.TrimRight(line, "\r"), nil
 }
 
 // maxValueBytes limita o valor de segredo lido do stdin. O servidor aceita

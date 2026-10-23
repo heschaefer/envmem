@@ -42,7 +42,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	e := &testEnv{vault: vault.New(), store: &memStore{now: clock.now}, logs: &bytes.Buffer{}, clock: clock}
 	e.h = newRouter(slog.New(slog.NewJSONHandler(e.logs, nil)), e.store, e.vault, clock.now)
 	e.store.addUser(store.User{Email: "root@empresa.com", GlobalRole: store.RoleSuperadmin, PasswordHash: rootHash()})
-	e.token = e.tokenFor(t, "root@empresa.com", testPassword)
+	e.token = e.sessionFor(t, "root@empresa.com")
 	return e
 }
 

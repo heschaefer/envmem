@@ -50,6 +50,18 @@ type Store interface {
 	// confirmados juntos ou desfeitos juntos (decisão 7).
 	InTx(ctx context.Context, fn func(tx Store) error) error
 	InsertSecretVersion(ctx context.Context, row store.SecretRow) (int, error)
+	// MFA (decisão 36).
+	ManagesAnyProject(ctx context.Context, userID string) (bool, error)
+	TOTPByUser(ctx context.Context, userID string) (store.TOTP, error)
+	StartTOTP(ctx context.Context, t store.TOTP) error
+	ConfirmTOTP(ctx context.Context, userID string, step int64) error
+	UseTOTPStep(ctx context.Context, userID string, step int64, maxFailures int) error
+	FailTOTP(ctx context.Context, userID string) (int, error)
+	DeleteTOTP(ctx context.Context, userID string) error
+	CreateMFAChallenge(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error
+	MFAChallenge(ctx context.Context, tokenHash []byte) (userID string, failures int, err error)
+	FailMFAChallenge(ctx context.Context, tokenHash []byte) (int, error)
+	DeleteMFAChallenge(ctx context.Context, tokenHash []byte) error
 }
 
 // maxConcurrentHashes limita quantas conferências de senha (argon2id, 19
@@ -86,10 +98,14 @@ func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Ti
 
 	// Rotas públicas: a lista é explícita e curta (decisão 5). O unseal não
 	// exige sessão porque a própria chave-mestra é a credencial (decisão 2),
-	// e o login é justamente onde a sessão nasce.
+	// e o login é justamente onde a sessão nasce. As duas rotas do MFA são
+	// a segunda etapa do login (decisão 36): a credencial delas é o desafio
+	// curto e de uso único que a senha certa rendeu.
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST /v1/unseal", s.handleUnseal)
 	mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /v1/auth/mfa", s.handleMFAVerify)
+	mux.HandleFunc("POST /v1/auth/mfa/setup", s.handleMFASetup)
 
 	// Todas as outras exigem sessão e uma permissão (decisão 5), e só podem
 	// ser registradas por esta função: não existe rota autenticada sem

@@ -41,6 +41,23 @@ func (e *testEnv) tokenFor(t *testing.T, email, password string) string {
 	return decode[loginResponse](t, rec).Token
 }
 
+// sessionFor abre uma sessão direto no store para o usuário, sem passar
+// pelo login. Serve aos testes que não são sobre o login, para usuários que
+// precisam de MFA (superadmin, admin, gestor): o fluxo do login com MFA tem
+// testes próprios (handlers_mfa_test.go).
+func (e *testEnv) sessionFor(t *testing.T, email string) string {
+	t.Helper()
+	u, err := e.store.UserByEmail(t.Context(), email)
+	if err != nil {
+		t.Fatalf("sessionFor %s: %v", email, err)
+	}
+	token, hash := auth.NewToken()
+	if err := e.store.CreateSession(t.Context(), hash, u.ID, e.clock.now().Add(auth.SessionTTL)); err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
 func TestLoginAndMe(t *testing.T) {
 	e := newTestEnv(t)
 	e.addUser(t, "dev@empresa.com", testPassword, 0)
