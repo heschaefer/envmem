@@ -172,8 +172,7 @@ func (formMFA) showSetup(setup client.MFASetup) error {
 	// As instruções vão direto para o terminal, antes do formulário do
 	// código: no modo acessível (TERM=dumb), o huh não mostra descrições.
 	// Não há um "já cadastrei?": o próprio código do app prova o cadastro.
-	fmt.Fprint(os.Stderr, setupInstructions(setup))
-	return nil
+	return showSetup(setup)
 }
 
 func (formMFA) code() (string, error) {
