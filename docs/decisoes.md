@@ -16,7 +16,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 6 | Acesso negado a projeto: 404 para quem não é membro, 403 para papel insuficiente | aceita para a Fatia 4 |
 | 7 | Auditoria de eventos de segurança, com falha fechada | aceita para a Fatia 4 |
 | 10 | Credenciais dinâmicas para PostgreSQL no TCC I | em aberto |
-| 11 | Lixeira de segredos, exclusão definitiva por admin e retenção de 10 versões | aceita para a Fatia 4 |
+| 11 | Lixeira de segredos, exclusão definitiva por admin e retenção de 10 versões | aceita (Fatia 4; código do MFA na exclusão desde o MFA) |
 | 12 | Go e PostgreSQL 18 | aceita |
 | 13 | Injeção por `syscall.Exec` no `run` | aceita (Fatia 1) |
 | 14 | Envelope encryption com AES-256-GCM | aceita (Fatia 2) |
@@ -41,7 +41,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 33 | Quatro papéis, globais e por projeto | aceita para a Fatia 4 |
 | 34 | Senhas com argon2id | aceita para a Fatia 4 |
 | 35 | Auditoria em tabela só de inserção | aceita para a Fatia 4 |
-| 36 | MFA para superadmin, admin e gestor | aceita para depois do núcleo |
+| 36 | MFA para superadmin, admin e gestor | aceita (MFA, depois do núcleo), detalhada na 50 |
 | 37 | Subcomandos diretos e modo interativo com huh | aceita (subcomandos nas Fatias 1 a 5; modo interativo na Fatia 5b) |
 | 38 | Configuração do CLI em arquivo | aceita (Fatia 5) |
 | 39 | Prompt próprio do envmem no TCC II | aceita para o TCC II |
@@ -55,6 +55,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 47 | Política de senha: de 12 a 128 caracteres, sem regras de composição | aceita (Fatia 4, passo 2) |
 | 48 | Valores e senhas no CLI nunca por argumento; confirmação ao criar e ao remover | aceita (Fatia 5) |
 | 49 | Modo interativo: escopo, login pelo menu e comando sem shell | aceita (Fatia 5b) |
+| 50 | MFA: TOTP próprio, login em duas etapas, trava e reset | aceita (MFA) |
 
 ---
 
@@ -446,7 +447,7 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 **Decisão:**
 - **Remover** (`DELETE /projects/{p}/secrets/{key}`) manda o segredo, com as versões que ele tem, para a lixeira: ele sai do `run` e das listagens, mas pode ser restaurado. Remover e restaurar são permitidos a gestor (nos projetos dele), admin e superadmin.
-- **Excluir definitivamente** apaga do banco todas as versões de um segredo que está na lixeira. Só admin e superadmin podem. Quando o MFA existir (decisão 36), a exclusão definitiva pede o código do autenticador de novo, no momento da ação, além do MFA do login.
+- **Excluir definitivamente** apaga do banco todas as versões de um segredo que está na lixeira. Só admin e superadmin podem. A exclusão definitiva pede o código do autenticador de novo, no momento da ação, além do MFA do login (implementado com o MFA, decisão 50).
 - **Retenção:** cada segredo guarda as 10 versões mais recentes. No `PUT`, na mesma transação, as versões além dessas 10 são apagadas.
 - Remover, restaurar e excluir definitivamente são registrados na auditoria (decisão 7).
 
@@ -480,7 +481,7 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 **Decisão:** valores de segredo e senhas nunca vêm por argumento. No terminal, são pedidos duas vezes, sem eco; em scripts, são lidos do stdin (`--valor-stdin` no `secrets set`, `--senha-stdin` no `login` e no `users`). O `secrets set` recebe só o nome da variável e, se ela não existe ou está na lixeira, pede confirmação antes do valor; pelo stdin, em que não há como perguntar, criar exige `--criar`. O `users rm` pede confirmação no terminal e, sem terminal, exige `--sim`. Os comandos de membros e de usuários recebem o e-mail, e o CLI busca o id, que é o que vai no caminho (o caminho vai para o log do servidor; o e-mail não deve ir): o `members` busca na lista de membros do projeto, que o gestor pode ver, e o `users`, na lista de usuários, que é só do superadmin.
 
-**Consequências:** a confirmação é conforto, não controle de acesso: quem decide é o servidor, no `PUT`, e outra gravação entre a consulta e o `PUT` não causa problema. O `set` consulta a lixeira antes de pedir o valor, e essa rota exige a mesma permissão do `PUT`; assim, quem não pode gravar recebe o 403 antes de digitar o segredo. O valor lido é zerado depois do uso, mas a conversão para texto exigida pelo JSON faz uma cópia que o Go não permite zerar (strings são imutáveis); o mesmo vale para a senha do login. O `secrets purge` não pede confirmação: só age sobre o que já está na lixeira e vai pedir o código do MFA quando ele existir (decisão 11). A parte interativa (confirmação e leitura sem eco) precisa de um terminal e não é coberta pelo `TestEndToEnd`; foi testada à mão com um pseudoterminal (roteiro da Fatia 5).
+**Consequências:** a confirmação é conforto, não controle de acesso: quem decide é o servidor, no `PUT`, e outra gravação entre a consulta e o `PUT` não causa problema. O `set` consulta a lixeira antes de pedir o valor, e essa rota exige a mesma permissão do `PUT`; assim, quem não pode gravar recebe o 403 antes de digitar o segredo. O valor lido é zerado depois do uso, mas a conversão para texto exigida pelo JSON faz uma cópia que o Go não permite zerar (strings são imutáveis); o mesmo vale para a senha do login. O `secrets purge` não pede confirmação: só age sobre o que já está na lixeira e, desde o MFA, pede o código do app autenticador, que faz esse papel (decisões 11 e 50). A parte interativa (confirmação e leitura sem eco) precisa de um terminal e não é coberta pelo `TestEndToEnd`; foi testada à mão com um pseudoterminal (roteiro da Fatia 5).
 
 ### 49. Modo interativo: escopo, login pelo menu e comando sem shell
 
@@ -494,13 +495,38 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 ### 36. MFA para superadmin, admin e gestor
 
-**Status:** aceita para depois do núcleo
+**Status:** aceita; implementada depois do núcleo (23/10/2026), com o desenho da decisão 50
 
 **Contexto:** os papéis que veem valores ou administram o sistema precisam de uma proteção a mais que a senha.
 
 **Decisão:** TOTP obrigatório para superadmin, admin e gestor. O segredo do TOTP fica cifrado pelo cofre. Não há códigos de recuperação: quem perde o app autenticador pede o reset a um superadmin. Um superadmin não reseta o próprio MFA; se só houver um, o reset é feito por `envmem-server reset-mfa`, direto no servidor.
 
 **Consequências:** a recuperação depende de outro superadmin, por isso se recomenda ter pelo menos dois. O desenvolvedor fica sem MFA, conforme a tabela de papéis.
+
+### 50. MFA: TOTP próprio, login em duas etapas, trava e reset
+
+**Status:** aceita (MFA, decidida em 23/10/2026)
+
+**Contexto:** a decisão 36 definiu quem precisa de MFA, mas não como. Gestor é um papel por projeto, e não global. O cadastro no app autenticador precisa de uma forma de levar o segredo até o celular. O cálculo do código podia vir de uma biblioteca. E o login, que devolve a sessão de uma vez, precisava de um segundo passo. Com 6 dígitos, cada palpite acerta com chance de cerca de 3 em 1 milhão (três passos de 30 segundos são aceitos); com o limite do login (decisão 45: 10 falhas a cada 5 minutos, sem travar a conta), quem já tem a senha faria cerca de 2.880 palpites por dia, ou cerca de 23% de chance de acerto em um mês.
+
+**Decisão:**
+- **Quem:** o MFA é exigido no login de superadmin, admin e de quem é gestor em qualquer projeto (`auth.RequiresMFA`). Quem é promovido a gestor sem MFA cadastra no próximo login.
+- **TOTP próprio**, só com a biblioteca padrão (`internal/auth/totp.go`): RFC 6238 com HMAC-SHA1, 6 dígitos e passos de 30 segundos (os únicos parâmetros que todos os apps aceitam), um passo de tolerância para cada lado e comparação em tempo constante, testado com os vetores das RFCs 4226 e 6238. Cada código vale uma vez: o servidor guarda o último passo aceito e o avança com um `UPDATE` condicionado, então dois logins ao mesmo tempo com o mesmo código não passam os dois.
+- **Login em duas etapas:** para quem precisa de MFA, a senha certa devolve um desafio (32 bytes aleatórios, guardado só como hash, válido por 5 minutos, de uso único), e não a sessão. Com ele, `POST /auth/mfa/setup` gera o segredo (no primeiro login) e `POST /auth/mfa` troca o código pela sessão. As duas rotas são públicas: a credencial delas é o desafio.
+- **Cadastro:** o CLI desenha o link `otpauth://` como QR code no terminal (biblioteca `rsc.io/qr`, sem dependências, com cores forçadas preto sobre branco) e mostra também a chave em base32. O segredo sai do servidor uma única vez. O cadastro exige terminal: pelo pipe, o CLI recusa.
+- **Armazenamento:** tabela própria (`user_totp`), com o segredo cifrado pelo cofre no mesmo envelope dos segredos de projeto e AAD próprio (`envmem/totp/v1` mais o id do usuário), e `mfa_challenges` para os desafios (migrações 00006 e 00007).
+- **Limites:** um código errado conta no limite do login (por conta e por IP), no desafio (5 erros descartam o desafio, e é preciso digitar a senha de novo) e na trava da conta: 10 códigos errados seguidos, desde o último certo, travam o MFA até o reset.
+- **Reset:** `POST /users/{u}/mfa/reset` (superadmin, nunca o próprio) apaga o cadastro (o que destrava a conta), os desafios e as sessões do usuário, como o reset de senha (decisão 46). Com um único superadmin, `envmem-server reset-mfa EMAIL`, com as regras do `reset-password`.
+- **Exclusão definitiva:** pede o código de novo (decisão 11), com as mesmas regras do login.
+
+**Consequências:**
+- **Trava:** com ela, quem roubou a senha tem no máximo 10 palpites (cerca de 3 em 100 mil de chance). Travar aqui não reabre o problema que levou a decisão 45 a não travar contas: só chega ao código quem já acertou a senha, e uma sequência de códigos errados indica que ela vazou. Quem tem a senha consegue travar o MFA da conta e forçar um reset, mas nesse caso a senha também precisa ser trocada.
+- **Cofre:** como o segredo do TOTP é cifrado pelo cofre, quem tem MFA só entra com o cofre aberto (503 com ele selado); o unseal não exige login, então nada trava. A ordem numa instalação nova fica `keygen`, `create-superadmin`, subir o servidor, unseal e, só então, o primeiro login, que cadastra o MFA.
+- **Cadastro no primeiro login:** quem obtiver a senha temporária antes do dono da conta cadastra o próprio app. O risco é reduzido porque a senha temporária vence em 72 horas e é trocada no primeiro login (o dono percebe que não consegue entrar), mas existe, como em todo sistema que cadastra o MFA no primeiro acesso.
+- **SHA-1:** o que quebrou no SHA-1 foi a resistência a colisões; o HMAC-SHA1 segue seguro como função pseudoaleatória, que é o uso no TOTP.
+- **Recuperação:** sem códigos de recuperação, perder o app exige um superadmin (decisão 36).
+- **Uso seguido:** quem acabou de entrar e quer excluir de vez espera o código mudar, porque o do login já foi usado.
+- **Testes:** o cadastro e o código no terminal não têm teste automático (precisam de um terminal); foram conferidos com pseudoterminal, com os códigos calculados à parte, como um app faria.
 
 ### 37. Subcomandos diretos e modo interativo com huh
 
