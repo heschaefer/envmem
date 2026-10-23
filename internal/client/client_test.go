@@ -331,3 +331,82 @@ func TestLogin(t *testing.T) {
 		t.Fatalf("senha errada: %v", err)
 	}
 }
+
+// Cada função de segredos chama a rota certa, e o valor vai só no corpo.
+func TestSecretRoutes(t *testing.T) {
+	const value = "valor-que-nao-pode-ir-na-url"
+	var got []string
+	_, c := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.RequestURI()+" "+string(body))
+		if strings.Contains(r.URL.String(), value) {
+			t.Error("o valor apareceu na URL")
+		}
+		switch {
+		case r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"project":"demo","key":"DB_PASSWORD","version":4}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/meta"):
+			io.WriteString(w, `{"project":"demo","secrets":[{"key":"DB_PASSWORD","version":4,"versions":4,"updated_at":"2026-10-22T20:00:00Z"}]}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/trash"):
+			io.WriteString(w, `{"project":"demo","trash":[{"key":"OLD","version":2,"deleted_at":"2026-10-22T20:00:00Z"}]}`)
+		case r.Method == http.MethodGet:
+			io.WriteString(w, `{"key":"DB_PASSWORD","value":"v2","version":2,"created_at":"2026-10-22T20:00:00Z"}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}), tls.VersionTLS13)
+	ctx := context.Background()
+
+	if v, err := c.PutSecret(ctx, "demo", "DB_PASSWORD", value); err != nil || v != 4 {
+		t.Fatalf("PutSecret = %d, %v", v, err)
+	}
+	if m, err := c.SecretsMeta(ctx, "demo"); err != nil || len(m) != 1 || m[0].Version != 4 {
+		t.Fatalf("SecretsMeta = %+v, %v", m, err)
+	}
+	if s, err := c.Secret(ctx, "demo", "DB_PASSWORD", 2); err != nil || s.Value != "v2" || s.Version != 2 {
+		t.Fatalf("Secret = %+v, %v", s, err)
+	}
+	if _, err := c.Secret(ctx, "demo", "DB_PASSWORD", 0); err != nil {
+		t.Fatal(err)
+	}
+	if tr, err := c.Trash(ctx, "demo"); err != nil || len(tr) != 1 || tr[0].Key != "OLD" {
+		t.Fatalf("Trash = %+v, %v", tr, err)
+	}
+	for name, err := range map[string]error{
+		"TrashSecret":   c.TrashSecret(ctx, "demo", "OLD"),
+		"RestoreSecret": c.RestoreSecret(ctx, "demo", "OLD"),
+		"PurgeSecret":   c.PurgeSecret(ctx, "demo", "OLD"),
+	} {
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	want := []string{
+		`PUT /v1/projects/demo/secrets/DB_PASSWORD {"value":"` + value + `"}`,
+		"GET /v1/projects/demo/secrets/meta ",
+		"GET /v1/projects/demo/secrets/DB_PASSWORD?version=2 ",
+		"GET /v1/projects/demo/secrets/DB_PASSWORD ",
+		"GET /v1/projects/demo/trash ",
+	}
+	for i, w := range want {
+		if i >= len(got) || got[i] != w {
+			t.Fatalf("requisição %d = %q, quero %q", i, got[i], w)
+		}
+	}
+	// A ordem do map não é fixa: as três últimas só precisam ter acontecido.
+	rest := strings.Join(got[len(want):], "\n")
+	for _, w := range []string{"DELETE /v1/projects/demo/secrets/OLD ", "POST /v1/projects/demo/secrets/OLD/restore ", "DELETE /v1/projects/demo/trash/OLD "} {
+		if !strings.Contains(rest, w) {
+			t.Errorf("faltou a requisição %q", w)
+		}
+	}
+
+	if _, err := c.PutSecret(ctx, "", "X", "v"); err == nil {
+		t.Error("projeto vazio: esperava erro")
+	}
+	if _, err := c.PutSecret(ctx, "demo", "", "v"); err == nil {
+		t.Error("segredo vazio: esperava erro")
+	}
+}

@@ -126,19 +126,52 @@ func TestEndToEnd(t *testing.T) {
 	wantStatus(t, "unseal", http.StatusOK,
 		request(t, hc, http.MethodPost, url+"/v1/unseal", `{"key":"`+key+`"}`))
 
-	// 3. Lista os projetos pelo CLI e grava o segredo DB_PASSWORD no demo.
+	// 3. Lista os projetos pelo CLI e grava o segredo DB_PASSWORD no demo,
+	// também pelo CLI.
 	if _, stdout, _ := runEnvmem(t, "projects", "list"); stdout != "demo  superadmin\n" {
 		t.Errorf("projects list: stdout = %q, quero %q", stdout, "demo  superadmin\n")
 	}
-	wantStatus(t, "PUT", http.StatusCreated,
-		request(t, hc, http.MethodPut, url+"/v1/projects/demo/secrets/DB_PASSWORD", `{"value":"`+value+`"}`))
+	// Pelo pipe, criar uma variável nova exige --criar: um nome digitado
+	// errado num script não cria variável em silêncio.
+	if _, _, stderr, code := execEnvmemIn(t, value+"\n", "secrets", "set", "--projeto", "demo", "--valor-stdin", "DB_PASSWORD"); code != 1 || !strings.Contains(stderr, "--criar") {
+		t.Errorf("set sem --criar: código %d, stderr %q", code, stderr)
+	}
+	// Versão 1 com um valor provisório, versão 2 com o valor certo.
+	runEnvmemIn(t, "provisorio\n", "secrets", "set", "--projeto", "demo", "--valor-stdin", "--criar", "DB_PASSWORD")
+	if _, stdout, _ := runEnvmemIn(t, value+"\n", "secrets", "set", "--projeto", "demo", "--valor-stdin", "DB_PASSWORD"); stdout != "DB_PASSWORD gravada no projeto demo (versão 2)\n" {
+		t.Errorf("set: stdout = %q", stdout)
+	}
+	if _, stdout, _ := runEnvmem(t, "secrets", "get", "--projeto", "demo", "--versao", "1", "DB_PASSWORD"); stdout != "provisorio\n" {
+		t.Errorf("get --versao 1: stdout = %q", stdout)
+	}
+	if _, stdout, _ := runEnvmem(t, "secrets", "get", "--projeto", "demo", "DB_PASSWORD"); stdout != value+"\n" {
+		t.Errorf("get: stdout = %q", stdout)
+	}
+	// O list mostra nomes e versões, nunca valores; sem --projeto, percorre
+	// todos os projetos do usuário.
+	var pid int
+	var stdout, stderr string
+	_, stdout, _ = runEnvmem(t, "secrets", "list")
+	if !strings.HasPrefix(stdout, "demo (superadmin)\n  DB_PASSWORD  v2  ") || strings.Contains(stdout, value) {
+		t.Errorf("secrets list: stdout = %q", stdout)
+	}
+	// Lixeira: o rm tira a variável do run e da listagem; o restore a traz
+	// de volta.
+	runEnvmem(t, "secrets", "rm", "--projeto", "demo", "DB_PASSWORD")
+	if _, stdout, _ := runEnvmem(t, "secrets", "list", "--projeto", "demo"); stdout != "" {
+		t.Errorf("list depois do rm: stdout = %q, quero vazio", stdout)
+	}
+	if _, stdout, _ := runEnvmem(t, "secrets", "trash", "--projeto", "demo"); !strings.HasPrefix(stdout, "DB_PASSWORD  v2  removida em ") {
+		t.Errorf("trash: stdout = %q", stdout)
+	}
+	runEnvmem(t, "secrets", "restore", "--projeto", "demo", "DB_PASSWORD")
 
 	// 4. No banco, o valor está ilegível.
 	assertNoPlaintextInDB(t, dbURL, value)
 
 	// 5. envmem run: o comando recebe a senha, no mesmo PID que o envmem
 	// imprimiu antes do exec, e não recebe as variáveis ENVMEM_*.
-	pid, stdout, stderr := runEnvmem(t, "run", "--verbose", "--projeto", "demo",
+	pid, stdout, stderr = runEnvmem(t, "run", "--verbose", "--projeto", "demo",
 		"--", "sh", "-c", `echo "$$ $DB_PASSWORD [$ENVMEM_SEGREDO_TESTE]"`)
 	if want := fmt.Sprintf("envmem: pid %d,", pid); !strings.HasPrefix(stderr, want) {
 		t.Errorf("stderr = %q, quero começar com %q", stderr, want)
