@@ -450,3 +450,52 @@ func TestMemberRoutes(t *testing.T) {
 		t.Error("id vazio: esperava erro")
 	}
 }
+
+// As funções de usuários chamam a rota certa; a senha temporária vai no
+// corpo, e as rotas por usuário usam o id.
+func TestUserRoutes(t *testing.T) {
+	const temp = "senha-temporaria-de-teste"
+	var got []string
+	_, c := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.RequestURI()+" "+string(body))
+		if strings.Contains(r.URL.String(), temp) {
+			t.Error("a senha apareceu na URL")
+		}
+		switch {
+		case r.Method == http.MethodGet:
+			io.WriteString(w, `{"users":[{"id":"u1","email":"dev@empresa.com","temp_password":true,"created_at":"2026-10-22T20:00:00Z"}]}`)
+		case r.URL.Path == "/v1/users":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":"u2","email":"adm@empresa.com","global_role":"admin","temp_password":true,"created_at":"2026-10-22T20:00:00Z"}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}), tls.VersionTLS13)
+	ctx := context.Background()
+
+	if u, err := c.Users(ctx); err != nil || len(u) != 1 || !u[0].TempPassword || u[0].GlobalRole != "" {
+		t.Fatalf("Users = %+v, %v", u, err)
+	}
+	if u, err := c.CreateUser(ctx, "adm@empresa.com", "admin", temp); err != nil || u.ID != "u2" || u.GlobalRole != "admin" {
+		t.Fatalf("CreateUser = %+v, %v", u, err)
+	}
+	if err := c.ResetPassword(ctx, "u1", temp); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteUser(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"GET /v1/users ",
+		`POST /v1/users {"email":"adm@empresa.com","global_role":"admin","temp_password":"` + temp + `"}`,
+		`POST /v1/users/u1/password/reset {"temp_password":"` + temp + `"}`,
+		"DELETE /v1/users/u1 ",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requisições:\n%s\nquero:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if err := c.DeleteUser(ctx, ""); err == nil {
+		t.Error("id vazio: esperava erro")
+	}
+}

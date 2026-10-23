@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -224,11 +225,25 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("delete repetido: código %d, stderr %q; quero 1 e 404 project_not_found", code, stderr)
 	}
 
-	// 7b. Membros: um usuário novo entra no demo como desenvolvedor, vira
-	// gestor e sai. O rm recebe o e-mail; o CLI acha o id na lista.
+	// 7b. Usuários e membros: o superadmin cria um usuário pelo CLI (senha
+	// temporária pelo stdin), que entra no demo como desenvolvedor, vira
+	// gestor e sai. Os comandos recebem o e-mail; o CLI acha o id na lista.
 	const devEmail = "dev@empresa.com"
-	wantStatus(t, "criar usuário", http.StatusCreated,
-		request(t, hc, http.MethodPost, url+"/v1/users", `{"email":"`+devEmail+`","global_role":"","temp_password":"senha temporaria do dev"}`))
+	users := func(action string, args ...string) []string {
+		return append([]string{"users", action, "--servidor", url}, args...)
+	}
+	if _, stdout, _ := runEnvmemIn(t, "senha temporaria do dev\n", users("create", "--senha-stdin", devEmail)...); !strings.HasPrefix(stdout, "usuário "+devEmail+" criado") {
+		t.Errorf("users create: stdout = %q", stdout)
+	}
+	if _, stdout, _ := runEnvmem(t, users("list")...); !regexp.MustCompile(`(?m)^dev@empresa\.com +usuário +senha temporária$`).MatchString(stdout) ||
+		!regexp.MustCompile(`(?m)^admin@empresa\.com +superadmin$`).MatchString(stdout) {
+		t.Errorf("users list: stdout = %q", stdout)
+	}
+	runEnvmemIn(t, "outra senha temporaria\n", users("reset-password", "--senha-stdin", devEmail)...)
+	// O servidor não deixa o superadmin remover a si mesmo.
+	if _, _, stderr, code := execEnvmem(t, users("rm", "--sim", email)...); code != 1 || !strings.Contains(stderr, "cannot_remove_self") {
+		t.Errorf("rm de si mesmo: código %d, stderr %q", code, stderr)
+	}
 	members := func(action string, args ...string) []string {
 		return append([]string{"members", action, "--servidor", url, "--projeto", "demo"}, args...)
 	}
@@ -242,6 +257,14 @@ func TestEndToEnd(t *testing.T) {
 	runEnvmem(t, members("rm", devEmail)...)
 	if _, _, stderr, code := execEnvmem(t, members("rm", devEmail)...); code != 1 || !strings.Contains(stderr, "não é membro") {
 		t.Errorf("rm repetido: código %d, stderr %q", code, stderr)
+	}
+	// Remover usuário não tem volta: sem terminal para confirmar, exige --sim.
+	if _, _, stderr, code := execEnvmem(t, users("rm", devEmail)...); code != 1 || !strings.Contains(stderr, "--sim") {
+		t.Errorf("users rm sem --sim: código %d, stderr %q", code, stderr)
+	}
+	runEnvmem(t, users("rm", "--sim", devEmail)...)
+	if _, stdout, _ := runEnvmem(t, users("list")...); strings.Contains(stdout, devEmail) {
+		t.Errorf("users list depois do rm: stdout = %q", stdout)
 	}
 
 	// 8. Auditoria: cada run deixou uma linha por segredo entregue, com a
