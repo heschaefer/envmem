@@ -1,15 +1,15 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"golang.org/x/term"
+
+	"github.com/heschaefer/envmem/internal/client"
 )
 
 // cmdLogin implementa "envmem login [opções] EMAIL": pede a senha, abre uma
@@ -61,62 +61,77 @@ func cmdLogin(args []string) int {
 		return 2
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx, cancel := apiContext()
 	res, err := c.Login(ctx, email, string(password))
+	cancel()
 	if err != nil {
 		printError(err)
 		return 1
 	}
-	c.SetToken(res.Token)
+	if err := openSession(c, cfg, res, string(password), terminalNewPassword); err != nil {
+		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
+		return 1
+	}
+	return 0
+}
 
-	// Senha temporária (decisão 43): a sessão só serve para trocá-la, então
-	// a troca acontece aqui mesmo, antes de gravar o token.
+// openSession completa um login aceito, no subcomando e no modo
+// interativo: troca a senha temporária, se for o caso, e grava o
+// config.json e o token. newPassword pede a senha nova (no terminal ou no
+// formulário do huh).
+//
+// Se algo falhar depois do login, a sessão é revogada: sem a troca da
+// senha temporária, ela não serve para nada (decisão 43), e uma sessão que
+// não ficou gravada não teria como ser encerrada pelo logout.
+func openSession(c *client.Client, cfg cliConfig, res client.LoginResult, current string, newPassword func() (string, error)) error {
+	c.SetToken(res.Token)
+	revoke := func() {
+		ctx, cancel := apiContext()
+		c.Logout(ctx)
+		cancel()
+	}
+
+	// Senha temporária (decisão 43): a troca acontece aqui mesmo, antes de
+	// gravar o token. O prazo da requisição começa depois da digitação.
 	if res.MustChangePassword {
-		if err := changeTempPassword(ctx, c, password); err != nil {
-			// Sem a troca, a sessão não serve para nada: é revogada.
-			c.Logout(ctx)
-			fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
-			return 1
+		next, err := newPassword()
+		if err == nil {
+			ctx, cancel := apiContext()
+			err = c.ChangePassword(ctx, current, next)
+			cancel()
 		}
+		if err != nil {
+			revoke()
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "senha trocada.")
 	}
 
 	// A configuração só é gravada depois do login aceito: um endereço
 	// digitado errado não substitui um config.json que funcionava.
 	if err := saveConfig(cfg); err != nil {
-		c.Logout(ctx)
-		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
-		return 1
+		revoke()
+		return err
 	}
 	if err := saveToken(res.Token); err != nil {
-		c.Logout(ctx)
-		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
-		return 1
+		revoke()
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "sessão iniciada; válida até %s\n", res.ExpiresAt.Local().Format("02/01 15:04"))
-	return 0
+	return nil
 }
 
-// passwordChanger é a parte do cliente que changeTempPassword usa.
-type passwordChanger interface {
-	ChangePassword(ctx context.Context, current, next string) error
-}
-
-// changeTempPassword pede a senha nova e troca a temporária. Exige
-// terminal: a senha nova é digitada duas vezes, sem eco.
-func changeTempPassword(ctx context.Context, c passwordChanger, current []byte) error {
+// terminalNewPassword pede, no terminal, a senha nova que substitui a
+// temporária. Exige terminal: a senha nova é digitada duas vezes, sem eco.
+func terminalNewPassword() (string, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return errors.New("a senha é temporária e precisa ser trocada; rode envmem login num terminal")
+		return "", errors.New("a senha é temporária e precisa ser trocada; rode envmem login num terminal")
 	}
 	fmt.Fprintln(os.Stderr, "Sua senha é temporária. Escolha uma senha nova.")
 	next, err := readNewPassword()
 	defer clear(next)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := c.ChangePassword(ctx, string(current), string(next)); err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "senha trocada.")
-	return nil
+	return string(next), nil
 }
