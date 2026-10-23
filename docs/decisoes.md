@@ -42,7 +42,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 34 | Senhas com argon2id | aceita para a Fatia 4 |
 | 35 | Auditoria em tabela só de inserção | aceita para a Fatia 4 |
 | 36 | MFA para superadmin, admin e gestor | aceita para depois do núcleo |
-| 37 | Subcomandos diretos e modo interativo com huh | aceita (subcomandos); modo interativo na Fatia 5b |
+| 37 | Subcomandos diretos e modo interativo com huh | aceita (subcomandos nas Fatias 1 a 5; modo interativo na Fatia 5b) |
 | 38 | Configuração do CLI em arquivo | aceita (Fatia 5) |
 | 39 | Prompt próprio do envmem no TCC II | aceita para o TCC II |
 | 40 | Shell supervisionado | descartada |
@@ -54,6 +54,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 46 | Senha esquecida: superadmin define nova senha temporária | aceita para a Fatia 4 |
 | 47 | Política de senha: de 12 a 128 caracteres, sem regras de composição | aceita (Fatia 4, passo 2) |
 | 48 | Valores e senhas no CLI nunca por argumento; confirmação ao criar e ao remover | aceita (Fatia 5) |
+| 49 | Modo interativo: escopo, login pelo menu e comando sem shell | aceita (Fatia 5b) |
 
 ---
 
@@ -481,6 +482,16 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 **Consequências:** a confirmação é conforto, não controle de acesso: quem decide é o servidor, no `PUT`, e outra gravação entre a consulta e o `PUT` não causa problema. O `set` consulta a lixeira antes de pedir o valor, e essa rota exige a mesma permissão do `PUT`; assim, quem não pode gravar recebe o 403 antes de digitar o segredo. O valor lido é zerado depois do uso, mas a conversão para texto exigida pelo JSON faz uma cópia que o Go não permite zerar (strings são imutáveis); o mesmo vale para a senha do login. O `secrets purge` não pede confirmação: só age sobre o que já está na lixeira e vai pedir o código do MFA quando ele existir (decisão 11). A parte interativa (confirmação e leitura sem eco) precisa de um terminal e não é coberta pelo `TestEndToEnd`; foi testada à mão com um pseudoterminal (roteiro da Fatia 5).
 
+### 49. Modo interativo: escopo, login pelo menu e comando sem shell
+
+**Status:** aceita (Fatia 5b, decidida em 23/10/2026)
+
+**Contexto:** a decisão 37 definiu o modo interativo, mas não o que entra nele, como fica o primeiro uso nem como transformar em argumentos o comando digitado em "Rodar um comando". O `envmem run -- comando args` recebe os argumentos já separados pelo shell; no menu, a pessoa digita uma linha. Para o primeiro uso, foi avaliado distribuir um binário do CLI com o endereço do servidor e a CA embutidos (gerado na instalação do servidor com `go build -ldflags`), o que exigiria o toolchain do Go, um binário por sistema e arquitetura e uma redistribuição a cada troca da CA.
+
+**Decisão:** o menu tem tudo o que os subcomandos fazem, conforme o papel: no projeto, rodar um comando e ver os nomes (todos); ver o valor, gravar, lixeira e membros (gestor, admin e superadmin), com a exclusão definitiva e a nomeação de gestores só para admin e superadmin; no menu principal, criar e remover projetos (admin e superadmin) e usuários (superadmin). Sem sessão válida, o menu abre um formulário de login; no primeiro uso, sem `config.json`, pede também o endereço do servidor e o caminho do `ca.crt`, que não é secreto e é distribuído pelo time; a CA não é embutida no binário. Em "Rodar um comando", a linha é separada sem shell: espaços separam, aspas simples e duplas agrupam, e os caracteres que o shell interpretaria (`| & ; < > $` e a crase), fora das aspas, são recusados com explicação. Os argumentos vão para o mesmo `syscall.Exec` do `run`. Remover projeto, remover usuário e excluir de vez pedem confirmação no menu, com "não" como padrão.
+
+**Consequências:** o processo continua sendo substituído pela aplicação, no mesmo PID, sem um shell no meio. Quem precisa de shell digita `sh -c '...'`, como no `run`: a recusa do `$` é atrito, não barreira, e o desenvolvedor ainda consegue ver os valores na própria máquina. O que cada papel vê fica em funções puras (`projectActions`, `memberActions` e `globalActions`), com teste, mas é só conforto: o servidor confere cada rota. O huh devolve os valores digitados como `string`, que o Go não permite zerar (decisão 48). Com `TERM=dumb`, o huh entra no modo acessível, com perguntas em texto corrido, e alguns textos fixos da biblioteca ficam em inglês ("Enter a number", `[y/N]`); nesse modo, o campo mascarado continua lido sem eco. A navegação pelos menus não tem teste automático: foi conferida com pseudoterminal no roteiro da Fatia 5b.
+
 ### 36. MFA para superadmin, admin e gestor
 
 **Status:** aceita para depois do núcleo
@@ -493,13 +504,13 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 
 ### 37. Subcomandos diretos e modo interativo com huh
 
-**Status:** subcomandos aceitos (Fatias 1 e 3); modo interativo para a Fatia 5b
+**Status:** aceita: subcomandos nas Fatias 1 a 5; modo interativo na Fatia 5b (23/10/2026), detalhado na decisão 49
 
 **Contexto:** o CLI precisa servir a scripts e automação, sem interação, e também a quem prefere menus em vez de lembrar comandos. Um painel web resolveria o segundo caso, mas aumentaria muito o escopo.
 
 **Decisão:** subcomandos com `switch` em `os.Args[1]` e um `flag.NewFlagSet` por subcomando, sem cobra. `envmem` sem argumentos abre menus navegáveis pelas setas, com a biblioteca huh, que chamam as mesmas funções dos subcomandos.
 
-**Consequências:** o modo interativo é só uma camada: esconder uma opção do menu não é controle de acesso, e o servidor confere cada ação.
+**Consequências:** o modo interativo é só uma camada: esconder uma opção do menu não é controle de acesso, e o servidor confere cada ação. Foi usada a versão 2 do huh (`charm.land/huh/v2`, sobre o Bubble Tea v2), a linha em desenvolvimento; para o que o envmem usa (seleção, campo de texto, campo mascarado e confirmação), a API é a mesma da versão 1, que fica em `github.com/charmbracelet/huh`.
 
 ### 38. Configuração do CLI em arquivo
 
