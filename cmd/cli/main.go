@@ -31,6 +31,8 @@ func run(args []string) int {
 		return cmdProjects(args[1:])
 	case "secrets":
 		return cmdSecrets(args[1:])
+	case "members":
+		return cmdMembers(args[1:])
 	case "help", "-h", "-help", "--help":
 		usage(os.Stdout)
 		return 0
@@ -50,6 +52,7 @@ Subcomandos:
   run        executa um comando com os segredos do projeto no ambiente
   projects   lista, cria e remove projetos
   secrets    lista, lê, grava e remove variáveis de um projeto
+  members    lista, adiciona e remove membros de um projeto
   help       mostra esta ajuda
 
 O login grava o servidor e a CA em ~/.config/envmem/config.json; nos

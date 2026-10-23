@@ -410,3 +410,43 @@ func TestSecretRoutes(t *testing.T) {
 		t.Error("segredo vazio: esperava erro")
 	}
 }
+
+// As funções de membros chamam a rota certa; o e-mail vai no corpo, e o
+// DELETE usa o id.
+func TestMemberRoutes(t *testing.T) {
+	var got []string
+	_, c := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.RequestURI()+" "+string(body))
+		switch r.Method {
+		case http.MethodGet:
+			io.WriteString(w, `{"members":[{"user_id":"u1","email":"dev@empresa.com","role":"desenvolvedor"}]}`)
+		case http.MethodPost:
+			io.WriteString(w, `{"user_id":"u1","email":"dev@empresa.com","role":"gestor"}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}), tls.VersionTLS13)
+	ctx := context.Background()
+
+	if m, err := c.Members(ctx, "demo"); err != nil || len(m) != 1 || m[0].UserID != "u1" {
+		t.Fatalf("Members = %+v, %v", m, err)
+	}
+	if m, err := c.SetMember(ctx, "demo", "dev@empresa.com", "gestor"); err != nil || m.Role != "gestor" {
+		t.Fatalf("SetMember = %+v, %v", m, err)
+	}
+	if err := c.RemoveMember(ctx, "demo", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"GET /v1/projects/demo/members ",
+		`POST /v1/projects/demo/members {"email":"dev@empresa.com","role":"gestor"}`,
+		"DELETE /v1/projects/demo/members/u1 ",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requisições:\n%s\nquero:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if err := c.RemoveMember(ctx, "demo", ""); err == nil {
+		t.Error("id vazio: esperava erro")
+	}
+}
