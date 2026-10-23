@@ -201,38 +201,14 @@ func secretsTrash(ctx context.Context, c *client.Client, project string, w io.Wr
 // A confirmação é conforto, não controle de acesso: quem decide se a
 // gravação é permitida é o servidor, no PUT.
 func secretsSet(ctx context.Context, c *client.Client, project, key string, fromStdin, create bool) error {
-	// O servidor confere o nome de novo; conferir aqui evita digitar o
-	// valor para depois ver o nome recusado.
-	if err := envname.Check(key); err != nil {
-		return err
-	}
-	if key == "meta" {
-		return errors.New(`"meta" é reservado (é o caminho da listagem de nomes)`)
-	}
 	if !fromStdin && !term.IsTerminal(int(os.Stdin.Fd())) {
 		return errors.New("o stdin não é um terminal; use --valor-stdin para ler o valor de um pipe")
 	}
-
-	// A lixeira exige a mesma permissão do PUT: quem não pode gravar
-	// recebe o 403 aqui, antes de digitar o valor.
-	trashed, err := c.Trash(ctx, project)
+	state, err := secretState(ctx, c, project, key)
 	if err != nil {
 		return err
 	}
-	metas, err := c.SecretsMeta(ctx, project)
-	if err != nil {
-		return err
-	}
-	var question string
-	switch {
-	case containsKey(metas, key):
-		// Já existe: grava uma versão nova, sem perguntar.
-	case containsTrashed(trashed, key):
-		question = fmt.Sprintf("A variável %s está na lixeira do projeto %s. Gravar uma versão nova a restaura. Continuar?", key, project)
-	default:
-		question = fmt.Sprintf("A variável %s não existe no projeto %s. Criar?", key, project)
-	}
-	if question != "" {
+	if question := state.question(project, key); question != "" {
 		if fromStdin && !create {
 			return fmt.Errorf("a variável %s não existe no projeto %s (ou está na lixeira); use --criar para gravá-la", key, project)
 		}
@@ -258,11 +234,76 @@ func secretsSet(ctx context.Context, c *client.Client, project, key string, from
 	// A conversão para string (exigida pelo JSON) faz uma cópia que não dá
 	// para zerar: em Go, strings são imutáveis. O mesmo vale para a senha
 	// no login.
-	version, err := c.PutSecret(ctx, project, key, string(value))
+	return putSecret(ctx, c, project, key, string(value))
+}
+
+// putSecret grava a versão nova e mostra o número dela.
+func putSecret(ctx context.Context, c *client.Client, project, key, value string) error {
+	version, err := c.PutSecret(ctx, project, key, value)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("%s gravada no projeto %s (versão %d)\n", key, project, version)
+	return nil
+}
+
+// keyState diz se uma variável existe, está na lixeira ou é nova.
+type keyState int
+
+const (
+	keyExists keyState = iota
+	keyTrashed
+	keyNew
+)
+
+// question é a confirmação a pedir antes de gravar, ou "" se a variável
+// já existe e a gravação é só uma versão nova.
+func (s keyState) question(project, key string) string {
+	switch s {
+	case keyTrashed:
+		return fmt.Sprintf("A variável %s está na lixeira do projeto %s. Gravar uma versão nova a restaura. Continuar?", key, project)
+	case keyNew:
+		return fmt.Sprintf("A variável %s não existe no projeto %s. Criar?", key, project)
+	}
+	return ""
+}
+
+// secretState confere o nome e descobre o estado da variável, antes de o
+// usuário digitar o valor. É usado pelo subcomando set e pelo modo
+// interativo.
+func secretState(ctx context.Context, c *client.Client, project, key string) (keyState, error) {
+	// O servidor confere o nome de novo; conferir aqui evita digitar o
+	// valor para depois ver o nome recusado.
+	if err := checkKeyName(key); err != nil {
+		return 0, err
+	}
+	// A lixeira exige a mesma permissão do PUT: quem não pode gravar
+	// recebe o 403 aqui, antes de digitar o valor.
+	trashed, err := c.Trash(ctx, project)
+	if err != nil {
+		return 0, err
+	}
+	metas, err := c.SecretsMeta(ctx, project)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case containsKey(metas, key):
+		return keyExists, nil
+	case containsTrashed(trashed, key):
+		return keyTrashed, nil
+	}
+	return keyNew, nil
+}
+
+// checkKeyName aplica ao nome as mesmas regras do PUT no servidor.
+func checkKeyName(key string) error {
+	if err := envname.Check(key); err != nil {
+		return err
+	}
+	if key == "meta" {
+		return errors.New(`"meta" é reservado (é o caminho da listagem de nomes)`)
+	}
 	return nil
 }
 
