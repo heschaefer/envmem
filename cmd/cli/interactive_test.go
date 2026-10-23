@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // Todo papel vê as ações do desenvolvedor (rodar um comando e ver os
 // nomes) e o "Voltar", que fica por último.
@@ -28,7 +31,7 @@ func hasAction(items []actionItem, a menuAction) bool {
 // O menu de cada papel segue a tabela de permissões do CLAUDE.md. É só o
 // que aparece: o servidor confere cada ação de novo.
 func TestProjectActionsByRole(t *testing.T) {
-	manage := []menuAction{actShowValue, actSetSecret, actTrashSecret, actTrash}
+	manage := []menuAction{actShowValue, actSetSecret, actTrashSecret, actTrash, actMembers}
 	tests := []struct {
 		role          string
 		manage, purge bool
@@ -48,8 +51,54 @@ func TestProjectActionsByRole(t *testing.T) {
 				t.Errorf("%s: ação %d presente = %v, quero %v", tt.role, a, hasAction(items, a), tt.manage)
 			}
 		}
-		if canPurge(tt.role) != tt.purge {
-			t.Errorf("%s: canPurge = %v, quero %v", tt.role, canPurge(tt.role), tt.purge)
+		if isAdmin(tt.role) != tt.purge {
+			t.Errorf("%s: isAdmin = %v, quero %v", tt.role, isAdmin(tt.role), tt.purge)
 		}
 	}
+}
+
+// O gestor só mexe com desenvolvedores; admin e superadmin, com todos.
+func TestMemberActions(t *testing.T) {
+	tests := []struct {
+		viewer, member string
+		want           []menuAction
+	}{
+		{"gestor", "desenvolvedor", []menuAction{actRemoveMember, actBack}},
+		{"gestor", "gestor", []menuAction{actBack}},
+		{"admin", "desenvolvedor", []menuAction{actMakeGestor, actRemoveMember, actBack}},
+		{"admin", "gestor", []menuAction{actMakeDev, actRemoveMember, actBack}},
+		{"superadmin", "gestor", []menuAction{actMakeDev, actRemoveMember, actBack}},
+		{"desenvolvedor", "desenvolvedor", []menuAction{actBack}},
+	}
+	for _, tt := range tests {
+		if got := actionsOf(memberActions(tt.viewer, tt.member)); !slices.Equal(got, tt.want) {
+			t.Errorf("memberActions(%s, %s) = %v, quero %v", tt.viewer, tt.member, got, tt.want)
+		}
+	}
+}
+
+// Projetos para admin e superadmin; usuários só para o superadmin; "Sair"
+// sempre por último.
+func TestGlobalActions(t *testing.T) {
+	tests := []struct {
+		role string
+		want []menuAction
+	}{
+		{"", []menuAction{actQuit}},
+		{"admin", []menuAction{actCreateProject, actDeleteProject, actQuit}},
+		{"superadmin", []menuAction{actCreateProject, actDeleteProject, actUsers, actQuit}},
+	}
+	for _, tt := range tests {
+		if got := actionsOf(globalActions(tt.role)); !slices.Equal(got, tt.want) {
+			t.Errorf("globalActions(%q) = %v, quero %v", tt.role, got, tt.want)
+		}
+	}
+}
+
+func actionsOf(items []actionItem) []menuAction {
+	out := make([]menuAction, len(items))
+	for i, it := range items {
+		out[i] = it.action
+	}
+	return out
 }

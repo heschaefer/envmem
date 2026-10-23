@@ -136,7 +136,13 @@ func usersCreate(ctx context.Context, c *client.Client, email, role string, from
 	if err != nil {
 		return err
 	}
-	u, err := c.CreateUser(ctx, email, role, string(password))
+	return createUser(ctx, c, email, role, string(password))
+}
+
+// createUser cria o usuário e mostra o resultado. É a parte comum ao
+// subcomando e ao modo interativo, que só muda de onde vem a senha.
+func createUser(ctx context.Context, c *client.Client, email, role, password string) error {
+	u, err := c.CreateUser(ctx, email, role, password)
 	if err != nil {
 		return err
 	}
@@ -165,6 +171,11 @@ func usersRemove(ctx context.Context, c *client.Client, email string, yes bool) 
 			return errCanceled
 		}
 	}
+	return deleteUser(ctx, c, u)
+}
+
+// deleteUser remove o usuário (pelo id) e mostra o resultado.
+func deleteUser(ctx context.Context, c *client.Client, u client.User) error {
 	if err := c.DeleteUser(ctx, u.ID); err != nil {
 		return err
 	}
@@ -184,7 +195,12 @@ func usersResetPassword(ctx context.Context, c *client.Client, email string, fro
 	if err != nil {
 		return err
 	}
-	if err := c.ResetPassword(ctx, u.ID, string(password)); err != nil {
+	return resetPassword(ctx, c, u, string(password))
+}
+
+// resetPassword define a senha temporária (pelo id) e mostra o resultado.
+func resetPassword(ctx context.Context, c *client.Client, u client.User, password string) error {
+	if err := c.ResetPassword(ctx, u.ID, password); err != nil {
 		return err
 	}
 	fmt.Printf("senha de %s redefinida: a nova é temporária (72 horas), e as sessões abertas foram encerradas\n", u.Email)

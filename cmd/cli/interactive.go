@@ -28,7 +28,8 @@ import (
 // enquanto o usuário está num formulário: o prazo é por requisição.
 const requestTimeout = 15 * time.Second
 
-// menuAction é uma ação do menu de um projeto.
+// menuAction é uma ação do menu (de um projeto, de um membro ou global; as
+// duas últimas ficam em interactive_admin.go).
 type menuAction int
 
 const (
@@ -55,9 +56,9 @@ func projectActions(role string) []actionItem {
 		{"Rodar um comando", actRun},
 		{"Ver variáveis disponíveis (só nomes)", actListNames},
 	}
-	if canManageSecrets(role) {
+	if isManager(role) {
 		trash := "Ver a lixeira (restaurar)"
-		if canPurge(role) {
+		if isAdmin(role) {
 			trash = "Ver a lixeira (restaurar ou excluir de vez)"
 		}
 		items = append(items,
@@ -65,6 +66,7 @@ func projectActions(role string) []actionItem {
 			actionItem{"Gravar uma variável", actSetSecret},
 			actionItem{"Mandar uma variável para a lixeira", actTrashSecret},
 			actionItem{trash, actTrash},
+			actionItem{"Membros do projeto", actMembers},
 		)
 	}
 	return append(items, actionItem{"Voltar", actBack})
@@ -89,32 +91,51 @@ func cmdInteractive() int {
 		return 1
 	}
 
+	// Um erro numa ação (como um 403 ou um 409) é mostrado e o menu
+	// continua; só Ctrl+C ou "Sair" encerram.
 	for {
-		project, ok, err := pickProject(c, me)
-		if errors.Is(err, huh.ErrUserAborted) || (err == nil && !ok) {
-			return 0
+		choice, projects, err := mainMenu(c, me)
+		if err == nil {
+			switch choice.action {
+			case actQuit:
+				return 0
+			case actOpenProject:
+				err = projectMenu(c, projects[choice.project])
+			case actCreateProject:
+				err = createProject(c)
+			case actDeleteProject:
+				err = deleteProject(c, projects)
+			case actUsers:
+				err = usersMenu(c)
+			}
 		}
-		if err != nil {
-			printError(err)
-			return 1
-		}
-		if err := projectMenu(c, project); errors.Is(err, huh.ErrUserAborted) {
+		switch {
+		case isAbort(err):
 			return 0
-		} else if err != nil {
+		case isCanceled(err):
+			fmt.Fprintln(os.Stderr, "cancelado")
+		case err != nil:
 			printError(err)
-			return 1
 		}
 	}
 }
 
-// pickProject mostra os projetos de quem está logado, com o papel em cada
-// um, e devolve o escolhido. ok é falso se a escolha foi sair.
-func pickProject(c *client.Client, me client.Me) (client.Project, bool, error) {
+// mainChoice é uma opção do menu principal: um projeto (pelo índice na
+// lista) ou uma ação global.
+type mainChoice struct {
+	project int
+	action  menuAction
+}
+
+// mainMenu mostra os projetos de quem está logado, com o papel em cada um,
+// e abaixo as ações globais do papel global. Devolve a escolha e a lista
+// de projetos a que o índice se refere.
+func mainMenu(c *client.Client, me client.Me) (mainChoice, []client.Project, error) {
 	ctx, cancel := apiContext()
 	projects, err := c.Projects(ctx)
 	cancel()
 	if err != nil {
-		return client.Project{}, false, err
+		return mainChoice{}, nil, err
 	}
 
 	title := "envmem: " + me.Email
@@ -126,29 +147,35 @@ func pickProject(c *client.Client, me client.Me) (client.Project, bool, error) {
 		description = "Você não tem acesso a nenhum projeto; peça a um gestor ou admin"
 	}
 
-	// O índice -1 é "Sair"; os outros apontam para a lista de projetos.
-	options := make([]huh.Option[int], 0, len(projects)+1)
+	options := make([]huh.Option[mainChoice], 0, len(projects)+4)
 	for i, p := range projects {
-		options = append(options, huh.NewOption(fmt.Sprintf("%s (%s)", p.Name, p.Role), i))
+		options = append(options, huh.NewOption(fmt.Sprintf("%s (%s)", p.Name, p.Role), mainChoice{i, actOpenProject}))
 	}
-	options = append(options, huh.NewOption("Sair", -1))
+	for _, it := range globalActions(me.GlobalRole) {
+		options = append(options, huh.NewOption(it.label, mainChoice{-1, it.action}))
+	}
 
-	// O huh abre com o cursor na opção igual ao valor inicial: começa no
-	// primeiro projeto, para que um Enter distraído não saia do programa.
-	choice := -1
-	if len(projects) > 0 {
-		choice = 0
-	}
-	err = huh.NewSelect[int]().Title(title).Description(description).Options(options...).Value(&choice).Run()
-	if err != nil || choice < 0 {
-		return client.Project{}, false, err
-	}
-	return projects[choice], true, nil
+	// O huh abre com o cursor na opção igual ao valor inicial: começa na
+	// primeira, para que um Enter distraído não saia do programa.
+	choice := options[0].Value
+	err = huh.NewSelect[mainChoice]().Title(title).Description(description).Options(options...).Value(&choice).Run()
+	return choice, projects, err
+}
+
+// isAbort diz se o usuário saiu de um formulário (Ctrl+C), o que encerra o
+// modo interativo.
+func isAbort(err error) bool {
+	return errors.Is(err, huh.ErrUserAborted)
+}
+
+// isCanceled diz se o usuário respondeu não a uma confirmação.
+func isCanceled(err error) bool {
+	return errors.Is(err, errCanceled)
 }
 
 // projectMenu mostra as ações do projeto até o usuário voltar. Um erro da
 // API numa ação (como um 403) é mostrado e o menu continua; só sair do
-// formulário (Ctrl+C) encerra.
+// formulário (Ctrl+C) encerra o modo interativo.
 func projectMenu(c *client.Client, p client.Project) error {
 	items := projectActions(p.Role)
 	options := make([]huh.Option[menuAction], 0, len(items))
@@ -157,7 +184,7 @@ func projectMenu(c *client.Client, p client.Project) error {
 	}
 
 	for {
-		// Cursor na primeira ação, não no "Voltar" (ver pickProject).
+		// Cursor na primeira ação, não no "Voltar" (ver mainMenu).
 		action := items[0].action
 		err := huh.NewSelect[menuAction]().
 			Title(fmt.Sprintf("%s (%s)", p.Name, p.Role)).
@@ -183,15 +210,15 @@ func projectMenu(c *client.Client, p client.Project) error {
 			err = trashSecret(c, p.Name)
 		case actTrash:
 			err = trashMenu(c, p.Name, p.Role)
+		case actMembers:
+			err = membersMenu(c, p.Name, p.Role)
 		}
-		if errors.Is(err, huh.ErrUserAborted) {
+		switch {
+		case isAbort(err):
 			return err
-		}
-		if errors.Is(err, errCanceled) {
+		case isCanceled(err):
 			fmt.Fprintln(os.Stderr, "cancelado")
-			continue
-		}
-		if err != nil {
+		case err != nil:
 			printError(err)
 		}
 	}
