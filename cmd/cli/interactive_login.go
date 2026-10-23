@@ -145,6 +145,9 @@ func tryLogin(cfg cliConfig, email, password string) (*client.Client, client.Me,
 	ctx, cancel := apiContext()
 	res, err := c.Login(ctx, email, password)
 	cancel()
+	if err == nil {
+		res, err = completeMFA(c, res, formMFA{})
+	}
 	if err != nil {
 		return nil, client.Me{}, err
 	}
@@ -161,3 +164,26 @@ func tryLogin(cfg cliConfig, email, password string) (*client.Client, client.Me,
 	me, err := c.Me(ctx)
 	return c, me, err
 }
+
+// formMFA é o MFA do modo interativo, em formulários do huh.
+type formMFA struct{}
+
+func (formMFA) showSetup(setup client.MFASetup) error {
+	// As instruções vão direto para o terminal, antes do formulário do
+	// código: no modo acessível (TERM=dumb), o huh não mostra descrições.
+	// Não há um "já cadastrei?": o próprio código do app prova o cadastro.
+	fmt.Fprint(os.Stderr, setupInstructions(setup))
+	return nil
+}
+
+func (formMFA) code() (string, error) {
+	var code string
+	err := huh.NewInput().
+		Title("Código do app autenticador").
+		Description("6 dígitos; muda a cada 30 segundos. No primeiro login, cadastre o app antes.").
+		Value(&code).
+		Run()
+	return code, err
+}
+
+func (formMFA) retry() bool { return true }

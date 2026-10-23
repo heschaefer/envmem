@@ -19,9 +19,10 @@ import (
 func cmdLogin(args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	conn := addConnFlags(fs)
-	fromStdin := fs.Bool("senha-stdin", false, "lê a senha de uma linha do stdin, em vez de pedir no terminal")
+	fromStdin := fs.Bool("senha-stdin", false, "lê a senha (e, com MFA, o código) do stdin, uma linha cada, em vez de pedir no terminal")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Uso: envmem login [--servidor URL] [--ca ARQUIVO] [--senha-stdin] EMAIL")
+		fmt.Fprintln(fs.Output(), "Com MFA e --senha-stdin, o código do app vai na linha seguinte à da senha.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -64,6 +65,9 @@ func cmdLogin(args []string) int {
 	ctx, cancel := apiContext()
 	res, err := c.Login(ctx, email, string(password))
 	cancel()
+	if err == nil {
+		res, err = completeMFA(c, res, terminalMFA{fromStdin: *fromStdin})
+	}
 	if err != nil {
 		printError(err)
 		return 1
