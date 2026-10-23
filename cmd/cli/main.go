@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"golang.org/x/term"
 )
 
 func main() {
@@ -13,9 +15,13 @@ func main() {
 }
 
 func run(args []string) int {
-	// Sem argumentos, a Fatia 5b vai abrir o modo interativo. Por enquanto,
-	// mostra a ajuda.
+	// Sem argumentos, abre o modo interativo (interactive.go). Sem terminal,
+	// como num script ou num pipe, não há menu para navegar: mostra a ajuda
+	// em vez de esperar uma tecla que nunca vem.
 	if len(args) == 0 {
+		if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+			return cmdInteractive()
+		}
 		usage(os.Stderr)
 		return 2
 	}
@@ -46,7 +52,8 @@ func run(args []string) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `Uso: envmem <subcomando> [opções]
+	fmt.Fprint(w, `Uso: envmem                          (modo interativo, com menus)
+       envmem <subcomando> [opções]
 
 Subcomandos:
   login      abre uma sessão no servidor (pede a senha)
