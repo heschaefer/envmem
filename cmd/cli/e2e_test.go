@@ -224,6 +224,26 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("delete repetido: código %d, stderr %q; quero 1 e 404 project_not_found", code, stderr)
 	}
 
+	// 7b. Membros: um usuário novo entra no demo como desenvolvedor, vira
+	// gestor e sai. O rm recebe o e-mail; o CLI acha o id na lista.
+	const devEmail = "dev@empresa.com"
+	wantStatus(t, "criar usuário", http.StatusCreated,
+		request(t, hc, http.MethodPost, url+"/v1/users", `{"email":"`+devEmail+`","global_role":"","temp_password":"senha temporaria do dev"}`))
+	members := func(action string, args ...string) []string {
+		return append([]string{"members", action, "--servidor", url, "--projeto", "demo"}, args...)
+	}
+	if _, stdout, _ := runEnvmem(t, members("add", devEmail)...); stdout != devEmail+" é desenvolvedor no projeto demo\n" {
+		t.Errorf("members add: stdout = %q", stdout)
+	}
+	runEnvmem(t, members("add", "--papel", "gestor", "DEV@empresa.com")...)
+	if _, stdout, _ := runEnvmem(t, members("list")...); stdout != devEmail+"  gestor\n" {
+		t.Errorf("members list: stdout = %q", stdout)
+	}
+	runEnvmem(t, members("rm", devEmail)...)
+	if _, _, stderr, code := execEnvmem(t, members("rm", devEmail)...); code != 1 || !strings.Contains(stderr, "não é membro") {
+		t.Errorf("rm repetido: código %d, stderr %q", code, stderr)
+	}
+
 	// 8. Auditoria: cada run deixou uma linha por segredo entregue, com a
 	// versão e o e-mail de quem rodou; nenhum valor aparece.
 	resp := request(t, hc, http.MethodGet, url+"/v1/audit?project=demo&limit=1000", "")
@@ -232,7 +252,7 @@ func TestEndToEnd(t *testing.T) {
 	if strings.Contains(string(body), value) {
 		t.Fatal("a auditoria contém o valor do segredo")
 	}
-	for _, want := range []string{`"action":"secret.run"`, `"secret_key":"DB_PASSWORD"`, `"secret_version":1`, `"user_email":"` + email + `"`, `"action":"secret.write"`} {
+	for _, want := range []string{`"action":"secret.run"`, `"secret_key":"DB_PASSWORD"`, `"secret_version":1`, `"user_email":"` + email + `"`, `"action":"secret.write"`, `"action":"member.set"`, `"action":"member.remove"`} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("a auditoria deveria conter %s", want)
 		}
