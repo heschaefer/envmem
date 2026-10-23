@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -75,17 +74,11 @@ func projectActions(role string) []actionItem {
 // cmdInteractive abre o modo interativo. Só é chamado com terminal no
 // stdin e no stdout (ver run).
 func cmdInteractive() int {
-	// Sem flags: servidor e CA vêm do config.json gravado pelo login.
-	conn := addConnFlags(flag.NewFlagSet("envmem", flag.ContinueOnError))
-	c, err := conn.authedClient()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "envmem: %v\n", err)
-		return 1
+	// Sessão válida, ou login pelo formulário (interactive_login.go).
+	c, me, err := interactiveSession()
+	if isAbort(err) {
+		return 0
 	}
-
-	ctx, cancel := apiContext()
-	me, err := c.Me(ctx)
-	cancel()
 	if err != nil {
 		printError(err)
 		return 1
