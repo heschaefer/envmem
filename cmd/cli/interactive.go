@@ -34,6 +34,7 @@ type menuAction int
 const (
 	actBack menuAction = iota
 	actListNames
+	actRun
 )
 
 // actionItem é uma opção do menu: o texto mostrado e a ação.
@@ -47,6 +48,7 @@ type actionItem struct {
 // Esconder uma opção não impede a ação: o servidor confere de novo.
 func projectActions(role string) []actionItem {
 	items := []actionItem{
+		{"Rodar um comando", actRun},
 		{"Ver variáveis disponíveis (só nomes)", actListNames},
 	}
 	return append(items, actionItem{"Voltar", actBack})
@@ -63,7 +65,7 @@ func cmdInteractive() int {
 		return 1
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := apiContext()
 	me, err := c.Me(ctx)
 	cancel()
 	if err != nil {
@@ -92,7 +94,7 @@ func cmdInteractive() int {
 // pickProject mostra os projetos de quem está logado, com o papel em cada
 // um, e devolve o escolhido. ok é falso se a escolha foi sair.
 func pickProject(c *client.Client, me client.Me) (client.Project, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := apiContext()
 	projects, err := c.Projects(ctx)
 	cancel()
 	if err != nil {
@@ -150,23 +152,34 @@ func projectMenu(c *client.Client, p client.Project) error {
 			return err
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		switch action {
 		case actBack:
-			cancel()
 			return nil
 		case actListNames:
-			err = listNames(ctx, c, p.Name)
+			err = listNames(c, p.Name)
+		case actRun:
+			err = runCommand(c, p.Name)
 		}
-		cancel()
+		if errors.Is(err, huh.ErrUserAborted) {
+			return err
+		}
 		if err != nil {
 			printError(err)
 		}
 	}
 }
 
+// apiContext é o prazo de uma chamada à API. Cada ação cria o seu só na
+// hora de chamar, depois dos formulários: o tempo que o usuário leva
+// digitando não conta.
+func apiContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), requestTimeout)
+}
+
 // listNames mostra os nomes das variáveis do projeto, sem os valores.
-func listNames(ctx context.Context, c *client.Client, project string) error {
+func listNames(c *client.Client, project string) error {
+	ctx, cancel := apiContext()
+	defer cancel()
 	metas, err := c.SecretsMeta(ctx, project)
 	if err != nil {
 		return err
@@ -176,4 +189,39 @@ func listNames(ctx context.Context, c *client.Client, project string) error {
 		return nil
 	}
 	return writeMetas(os.Stdout, "", metas)
+}
+
+// runCommand pede um comando e o executa com os segredos do projeto, como
+// "envmem run": busca os segredos e chama o syscall.Exec, e o processo do
+// envmem (com o menu) vira a aplicação, no mesmo PID. Se der certo, não
+// retorna; se o exec falhar (comando inexistente, por exemplo), o erro
+// volta para o menu.
+func runCommand(c *client.Client, project string) error {
+	var line string
+	err := huh.NewInput().
+		Title("Comando").
+		Description("Roda direto, sem shell: sem pipes, redirecionamentos nem $VARIÁVEIS. Aspas agrupam argumentos.").
+		Placeholder("npm run dev").
+		Value(&line).
+		Validate(func(s string) error {
+			_, err := splitCommand(s)
+			return err
+		}).
+		Run()
+	if err != nil {
+		return err
+	}
+	command, err := splitCommand(line)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := apiContext()
+	secrets, err := c.Secrets(ctx, project)
+	cancel()
+	if err != nil {
+		return err
+	}
+	// O mesmo caminho do subcomando run (inject.go), sem --verbose.
+	return execWithSecrets(command, secrets, false)
 }
