@@ -53,6 +53,7 @@ Cada decisão segue o formato de ADR (Architecture Decision Record) curto: conte
 | 45 | Limite de tentativas de login em memória | aceita para a Fatia 4 |
 | 46 | Senha esquecida: superadmin define nova senha temporária | aceita para a Fatia 4 |
 | 47 | Política de senha: de 12 a 128 caracteres, sem regras de composição | aceita (Fatia 4, passo 2) |
+| 48 | Valores e senhas no CLI nunca por argumento; confirmação ao criar e ao remover | aceita (Fatia 5) |
 
 ---
 
@@ -469,6 +470,16 @@ Cada evento guarda também o IP de origem e o resultado (sucesso, negado ou falh
 **Decisão:** toda senha, inclusive a temporária, tem de 12 a 128 caracteres, contados como caracteres (e não bytes). Não há regras de composição. O servidor confere a política; o CLI pode avisar antes, mas não decide.
 
 **Consequências:** 12 caracteres é um meio-termo entre atrito e força, abaixo do mínimo recomendado para fator único; essa diferença deve ser reconhecida no texto e reavaliada quando o MFA existir. O máximo de 128 só limita o tamanho da entrada; o argon2id aceita senhas longas sem custo extra relevante.
+
+### 48. Valores e senhas no CLI nunca por argumento; confirmação ao criar e ao remover
+
+**Status:** aceita (Fatia 5, decidida em 23/10/2026)
+
+**Contexto:** na Fatia 5, gravar segredos, criar usuários e redefinir senhas passou a ser feito pelos subcomandos do CLI, digitados no shell. Tudo o que vai como argumento fica no histórico do shell (`history`, `~/.bash_history`), aparece para os outros usuários da máquina no `ps` (`/proc/PID/cmdline`) enquanto o comando roda e pode ser registrado por ferramentas de auditoria do sistema operacional e de CI. No modo interativo (Fatia 5b), o risco não existe, porque o shell só registra `envmem`; mas os subcomandos continuam sendo a base, usada em scripts. Além disso, sem eco, um nome de variável digitado errado criaria uma variável nova em silêncio, e remover um usuário não tem como ser desfeito.
+
+**Decisão:** valores de segredo e senhas nunca vêm por argumento. No terminal, são pedidos duas vezes, sem eco; em scripts, são lidos do stdin (`--valor-stdin` no `secrets set`, `--senha-stdin` no `login` e no `users`). O `secrets set` recebe só o nome da variável e, se ela não existe ou está na lixeira, pede confirmação antes do valor; pelo stdin, em que não há como perguntar, criar exige `--criar`. O `users rm` pede confirmação no terminal e, sem terminal, exige `--sim`. Os comandos de membros e de usuários recebem o e-mail, e o CLI busca o id, que é o que vai no caminho (o caminho vai para o log do servidor; o e-mail não deve ir): o `members` busca na lista de membros do projeto, que o gestor pode ver, e o `users`, na lista de usuários, que é só do superadmin.
+
+**Consequências:** a confirmação é conforto, não controle de acesso: quem decide é o servidor, no `PUT`, e outra gravação entre a consulta e o `PUT` não causa problema. O `set` consulta a lixeira antes de pedir o valor, e essa rota exige a mesma permissão do `PUT`; assim, quem não pode gravar recebe o 403 antes de digitar o segredo. O valor lido é zerado depois do uso, mas a conversão para texto exigida pelo JSON faz uma cópia que o Go não permite zerar (strings são imutáveis); o mesmo vale para a senha do login. O `secrets purge` não pede confirmação: só age sobre o que já está na lixeira e vai pedir o código do MFA quando ele existir (decisão 11). A parte interativa (confirmação e leitura sem eco) precisa de um terminal e não é coberta pelo `TestEndToEnd`; foi testada à mão com um pseudoterminal (roteiro da Fatia 5).
 
 ### 36. MFA para superadmin, admin e gestor
 
