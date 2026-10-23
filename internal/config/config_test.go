@@ -2,6 +2,7 @@ package config
 
 import (
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,16 @@ func TestLoadServerTLSFiles(t *testing.T) {
 	cfg, _ = LoadServer(nil, io.Discard)
 	if cfg.TLSCertFile != "certs/server.crt" || cfg.TLSKeyFile != "certs/server.key" {
 		t.Errorf("padrões = %q, %q", cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+}
+
+// Um comando que o main não reconhece (digitado errado) é recusado, em vez
+// de subir o servidor.
+func TestLoadServerUnknownCommand(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	for _, args := range [][]string{{"reset-mfaa"}, {"--listen", ":9000", "keygen"}} {
+		if _, err := LoadServer(args, io.Discard); err == nil || !strings.Contains(err.Error(), "comando desconhecido") {
+			t.Errorf("LoadServer(%q) = %v, quero erro de comando desconhecido", args, err)
+		}
 	}
 }

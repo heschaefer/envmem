@@ -122,9 +122,19 @@ func (s *Store) FailTOTP(ctx context.Context, userID string) (int, error) {
 	return n, nil
 }
 
-// DeleteTOTP apaga o MFA do usuário (reset). ErrNotFound se não havia.
-func (s *Store) DeleteTOTP(ctx context.Context, userID string) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM user_totp WHERE user_id = $1`, userID)
+// ResetMFA é o reset do MFA de um usuário (por um superadmin, ou pelo
+// envmem-server reset-mfa): apaga o cadastro (o que também destrava a
+// conta), os desafios pendentes e as sessões, como no reset de senha
+// (decisão 46). No próximo login, o usuário cadastra o app de novo.
+// ErrNotFound se ele não tinha MFA.
+func (s *Store) ResetMFA(ctx context.Context, userID string) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		return resetMFA(ctx, tx, userID)
+	})
+}
+
+func resetMFA(ctx context.Context, tx pgx.Tx, userID string) error {
+	tag, err := tx.Exec(ctx, `DELETE FROM user_totp WHERE user_id = $1`, userID)
 	if isInvalidText(err) {
 		return ErrNotFound
 	}
@@ -134,7 +144,57 @@ func (s *Store) DeleteTOTP(ctx context.Context, userID string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM mfa_challenges WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("store: apagar desafios: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("store: revogar sessões: %w", err)
+	}
 	return nil
+}
+
+// ResetLoneSuperadminMFA é o reset do "envmem-server reset-mfa": como o
+// ResetLoneSuperadminPassword, só vale para um superadmin, e só quando não
+// há outro superadmin que possa fazer o reset pela API (um superadmin não
+// reseta o próprio MFA). Devolve ErrNotFound (sem usuário ou sem MFA),
+// ErrNotSuperadmin ou ErrSuperadminExists quando não se aplica. O evento
+// de auditoria entra na mesma transação.
+func (s *Store) ResetLoneSuperadminMFA(ctx context.Context, email string) (User, error) {
+	var u User
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		supers, err := lockSuperadmins(ctx, tx)
+		if err != nil {
+			return err
+		}
+		const q = `
+			SELECT id, email, coalesce(global_role, ''), password_hash, temp_password_expires_at, created_at
+			FROM users
+			WHERE email = $1`
+		u, err = scanUser(tx.QueryRow(ctx, q, email))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: ler usuário: %w", err)
+		}
+		if u.GlobalRole != RoleSuperadmin {
+			return ErrNotSuperadmin
+		}
+		if len(supers) > 1 {
+			return ErrSuperadminExists
+		}
+		if err := resetMFA(ctx, tx, u.ID); err != nil {
+			return err
+		}
+		// Sem usuário nem IP: a ação foi feita direto no servidor.
+		return (&Store{db: tx}).InsertAudit(ctx, AuditEvent{
+			Action:       "mfa.reset.server",
+			TargetUserID: u.ID,
+			TargetEmail:  u.Email,
+			Result:       AuditSuccess,
+		})
+	})
+	return u, err
 }
 
 // ManagesAnyProject diz se o usuário é gestor de algum projeto. É o que

@@ -288,3 +288,45 @@ func writeMFALocked(w http.ResponseWriter) {
 	writeError(w, http.StatusForbidden, "mfa_locked",
 		"o MFA desta conta travou por excesso de códigos errados; peça o reset a um superadmin")
 }
+
+// handleResetMFA apaga o MFA de um usuário (superadmin): quem perdeu o app
+// autenticador, ou teve o MFA travado, cadastra de novo no próximo login.
+// As sessões do usuário são revogadas, como no reset de senha. Não há
+// códigos de recuperação: este é o caminho. Um superadmin não reseta o
+// próprio MFA (precisa de outro; sendo o único, envmem-server reset-mfa).
+func (s *server) handleResetMFA(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("user")
+	if id == sessionFrom(r.Context()).user.ID {
+		writeError(w, http.StatusConflict, "cannot_reset_self",
+			"um superadmin não reseta o próprio MFA; peça a outro (sendo o único, use envmem-server reset-mfa no servidor)")
+		return
+	}
+	err := s.store.InTx(r.Context(), func(tx Store) error {
+		target, err := tx.UserByID(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		if err := tx.ResetMFA(r.Context(), target.ID); err != nil {
+			return err
+		}
+		e := s.event(r, "mfa.reset", store.AuditSuccess)
+		e.TargetUserID, e.TargetEmail = target.ID, target.Email
+		return auditErr(tx.InsertAudit(r.Context(), e))
+	})
+	if errors.Is(err, errAudit) {
+		s.logger.Error("auditoria: registrar reset de MFA", "err", err)
+		writeAuditFailed(w)
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "mfa_not_found", "usuário não encontrado, ou sem MFA cadastrado")
+		return
+	}
+	if err != nil {
+		s.logger.Error("resetar MFA", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return
+	}
+	s.logger.Info("MFA resetado", "user_id", id)
+	w.WriteHeader(http.StatusNoContent)
+}

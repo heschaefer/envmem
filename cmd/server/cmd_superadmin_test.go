@@ -112,3 +112,32 @@ func TestResetLoneSuperadmin(t *testing.T) {
 		t.Errorf("senha curta: %v", err)
 	}
 }
+
+type fakeMFAResetter struct {
+	email string
+	err   error
+}
+
+func (f *fakeMFAResetter) ResetLoneSuperadminMFA(ctx context.Context, email string) (store.User, error) {
+	f.email = email
+	return store.User{}, f.err
+}
+
+func TestResetLoneSuperadminMFA(t *testing.T) {
+	f := &fakeMFAResetter{}
+	if email, err := resetLoneSuperadminMFA(context.Background(), f, " Admin@Empresa.com"); err != nil || email != "admin@empresa.com" || f.email != email {
+		t.Fatalf("reset = %q, %v (store recebeu %q)", email, err, f.email)
+	}
+	for errIn, want := range map[error]string{
+		store.ErrNotSuperadmin:    "só reseta o MFA de superadmin",
+		store.ErrSuperadminExists: "há outro superadmin",
+		store.ErrNotFound:         "não tem MFA cadastrado",
+	} {
+		if _, err := resetLoneSuperadminMFA(context.Background(), &fakeMFAResetter{err: errIn}, "a@b.com"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%v: erro = %v, quero %q", errIn, err, want)
+		}
+	}
+	if _, err := resetLoneSuperadminMFA(context.Background(), f, "sem-arroba"); err == nil {
+		t.Error("e-mail inválido: esperava erro")
+	}
+}

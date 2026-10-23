@@ -57,7 +57,7 @@ type Store interface {
 	ConfirmTOTP(ctx context.Context, userID string, step int64) error
 	UseTOTPStep(ctx context.Context, userID string, step int64, maxFailures int) error
 	FailTOTP(ctx context.Context, userID string) (int, error)
-	DeleteTOTP(ctx context.Context, userID string) error
+	ResetMFA(ctx context.Context, userID string) error
 	CreateMFAChallenge(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error
 	MFAChallenge(ctx context.Context, tokenHash []byte) (userID string, failures int, err error)
 	FailMFAChallenge(ctx context.Context, tokenHash []byte) (int, error)
@@ -134,6 +134,7 @@ func newRouter(logger *slog.Logger, st Store, v *vault.Vault, now func() time.Ti
 	route("POST /v1/users", auth.PermManageUsers, s.handleCreateUser)
 	route("DELETE /v1/users/{user}", auth.PermManageUsers, s.handleDeleteUser)
 	route("POST /v1/users/{user}/password/reset", auth.PermManageUsers, s.handleResetPassword)
+	route("POST /v1/users/{user}/mfa/reset", auth.PermManageUsers, s.handleResetMFA)
 	route("GET /v1/projects/{project}/secrets", auth.PermUseSecrets, s.handleListSecrets)
 	route("GET /v1/projects/{project}/secrets/meta", auth.PermListSecretNames, s.handleSecretsMeta)
 	route("GET /v1/projects/{project}/secrets/{key}", auth.PermReadSecretValue, s.handleGetSecret)

@@ -30,6 +30,8 @@ func main() {
 			os.Exit(cmdSuperadmin(os.Args[2:]))
 		case "reset-password":
 			os.Exit(cmdResetPassword(os.Args[2:]))
+		case "reset-mfa":
+			os.Exit(cmdResetMFA(os.Args[2:]))
 		}
 	}
 

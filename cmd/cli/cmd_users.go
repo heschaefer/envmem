@@ -29,7 +29,7 @@ func cmdUsers(args []string) int {
 	var wantEmail bool
 	switch action {
 	case "list":
-	case "create", "rm", "reset-password":
+	case "create", "rm", "reset-password", "reset-mfa":
 		wantEmail = true
 	case "help", "-h", "-help", "--help":
 		usersUsage(os.Stdout)
@@ -91,6 +91,11 @@ func cmdUsers(args []string) int {
 		err = usersRemove(ctx, c, email, sim)
 	case "reset-password":
 		err = usersResetPassword(ctx, c, email, fromStdin)
+	case "reset-mfa":
+		var u client.User
+		if u, err = findUser(ctx, c, email); err == nil {
+			err = resetMFA(ctx, c, u)
+		}
 	}
 	if errors.Is(err, errCanceled) {
 		fmt.Fprintln(os.Stderr, "cancelado")
@@ -207,6 +212,16 @@ func resetPassword(ctx context.Context, c *client.Client, u client.User, passwor
 	return nil
 }
 
+// resetMFA apaga o MFA (pelo id) e mostra o resultado. Sem confirmação:
+// o efeito é o usuário cadastrar o app de novo no próximo login.
+func resetMFA(ctx context.Context, c *client.Client, u client.User) error {
+	if err := c.ResetMFA(ctx, u.ID); err != nil {
+		return err
+	}
+	fmt.Printf("MFA de %s resetado: o app é cadastrado de novo no próximo login, e as sessões abertas foram encerradas\n", u.Email)
+	return nil
+}
+
 // findUser acha o usuário pelo e-mail. As rotas recebem o id, porque o
 // caminho vai para o log do servidor e o e-mail não deve ir.
 func findUser(ctx context.Context, c *client.Client, email string) (client.User, error) {
@@ -242,6 +257,8 @@ Ações (só superadmin):
                          (--papel admin ou --papel superadmin para papel global)
   rm EMAIL               remove um usuário (pede confirmação; --sim em scripts)
   reset-password EMAIL   define uma nova senha temporária e encerra as sessões
+  reset-mfa EMAIL        apaga o MFA (app perdido ou MFA travado) e encerra as
+                         sessões; o app é cadastrado de novo no próximo login
 
 A senha temporária é digitada por quem cria, vale 72 horas e é trocada pelo
 usuário no primeiro envmem login. Gestor e desenvolvedor são papéis por

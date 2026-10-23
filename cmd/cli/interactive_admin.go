@@ -308,14 +308,15 @@ func createUserForm(c *client.Client) error {
 	return createUser(ctx, c, email, role, password)
 }
 
-// userMenu oferece redefinir a senha e remover o usuário.
+// userMenu oferece redefinir a senha, resetar o MFA e remover o usuário.
 func userMenu(c *client.Client, u client.User) error {
-	const reset, remove, back = 1, 2, 0
+	const reset, resetMFAAction, remove, back = 1, 3, 2, 0
 	action := reset
 	err := huh.NewSelect[int]().
 		Title(u.Email+" ("+displayRole(u.GlobalRole)+")").
 		Options(
 			huh.NewOption("Redefinir a senha (nova senha temporária)", reset),
+			huh.NewOption("Resetar o MFA (app perdido ou MFA travado)", resetMFAAction),
 			huh.NewOption("Remover", remove),
 			huh.NewOption("Voltar", back),
 		).
@@ -333,6 +334,10 @@ func userMenu(c *client.Client, u client.User) error {
 		ctx, cancel := apiContext()
 		defer cancel()
 		return resetPassword(ctx, c, u, password)
+	case resetMFAAction:
+		ctx, cancel := apiContext()
+		defer cancel()
+		return resetMFA(ctx, c, u)
 	case remove:
 		// Como no "envmem users rm": sem lixeira, então confirma antes.
 		ok := false
