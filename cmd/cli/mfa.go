@@ -72,8 +72,7 @@ func (t terminalMFA) showSetup(setup client.MFASetup) error {
 	if t.fromStdin || !term.IsTerminal(int(os.Stdin.Fd())) {
 		return errors.New("o MFA é obrigatório para o seu papel e ainda não foi cadastrado; rode envmem login num terminal")
 	}
-	fmt.Fprint(os.Stderr, setupInstructions(setup))
-	return nil
+	return showSetup(setup)
 }
 
 func (t terminalMFA) code() (string, error) {
@@ -91,20 +90,39 @@ func (t terminalMFA) code() (string, error) {
 
 func (t terminalMFA) retry() bool { return !t.fromStdin }
 
+// showSetup mostra o cadastro no stderr: o QR code (num terminal com
+// cores) e, sempre, a chave e o link, para quem não pode escanear.
+func showSetup(setup client.MFASetup) error {
+	withQR := canShowQR()
+	fmt.Fprint(os.Stderr, "O MFA é obrigatório para o seu papel. Cadastre o envmem no app autenticador\n"+
+		"(Google Authenticator, Authy, FreeOTP...).\n\n")
+	if withQR {
+		if err := writeQR(os.Stderr, setup.URI); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr)
+	}
+	fmt.Fprint(os.Stderr, setupInstructions(setup, withQR))
+	return nil
+}
+
 // setupInstructions é o texto do cadastro: a chave em grupos de 4 (mais
 // fácil de digitar) e o link. O segredo aparece uma única vez, aqui; quem
-// tiver a chave gera os códigos, então ela não deve ser copiada para
-// nenhum outro lugar.
-func setupInstructions(setup client.MFASetup) string {
+// tiver a chave (ou uma foto do QR) gera os códigos, então ela não deve
+// ser copiada para nenhum outro lugar.
+func setupInstructions(setup client.MFASetup, withQR bool) string {
 	var groups []string
 	for s := setup.Secret; len(s) > 0; {
 		n := min(4, len(s))
 		groups = append(groups, s[:n])
 		s = s[n:]
 	}
-	return "O MFA é obrigatório para o seu papel. Cadastre o envmem no app autenticador\n" +
-		"(Google Authenticator, Authy, FreeOTP...), digitando esta chave:\n\n" +
+	how := "Digite esta chave no app:"
+	if withQR {
+		how = "Escaneie o QR code acima ou digite esta chave no app:"
+	}
+	return how + "\n\n" +
 		"    " + strings.Join(groups, " ") + "\n\n" +
-		"ou abrindo este link:\n" + setup.URI + "\n\n" +
+		"ou abra este link:\n" + setup.URI + "\n\n" +
 		"A chave só aparece agora; não a guarde em outro lugar.\n"
 }
