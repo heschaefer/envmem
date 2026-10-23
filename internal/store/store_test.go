@@ -900,14 +900,52 @@ func TestMFA(t *testing.T) {
 		t.Errorf("desafio usado: %v, quero ErrNotFound", err)
 	}
 
-	// Reset apaga o MFA; apagar o usuário apaga MFA e desafios (CASCADE).
-	if err := s.DeleteTOTP(ctx, u.ID); err != nil {
+	// Reset: apaga o MFA, os desafios e as sessões do usuário.
+	if err := s.CreateMFAChallenge(ctx, hash(3), u.ID, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteTOTP(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+	if err := s.CreateSession(ctx, hash(4), u.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetMFA(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TOTPByUser(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("MFA depois do reset: %v", err)
+	}
+	if _, _, err := s.MFAChallenge(ctx, hash(3)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("desafio depois do reset: %v", err)
+	}
+	if _, err := s.UserBySession(ctx, hash(4)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("sessão depois do reset: %v", err)
+	}
+	if err := s.ResetMFA(ctx, u.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("reset sem MFA: %v, quero ErrNotFound", err)
 	}
-	if err := s.DeleteTOTP(ctx, "nao-e-uuid"); !errors.Is(err, ErrNotFound) {
+	if err := s.ResetMFA(ctx, "nao-e-uuid"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("id inválido: %v, quero ErrNotFound", err)
+	}
+
+	// Reset no servidor: só o único superadmin, e só com MFA.
+	if _, err := s.ResetLoneSuperadminMFA(ctx, "admin@empresa.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("superadmin sem MFA: %v, quero ErrNotFound", err)
+	}
+	if err := s.StartTOTP(ctx, totp("de novo")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetLoneSuperadminMFA(ctx, "dev@empresa.com"); !errors.Is(err, ErrNotSuperadmin) {
+		t.Errorf("não superadmin: %v, quero ErrNotSuperadmin", err)
+	}
+	if got, err := s.ResetLoneSuperadminMFA(ctx, "admin@empresa.com"); err != nil || got.ID != u.ID {
+		t.Fatalf("ResetLoneSuperadminMFA = %+v, %v", got, err)
+	}
+	if err := s.StartTOTP(ctx, totp("outra vez")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateUser(ctx, "outro@empresa.com", RoleSuperadmin, "hash", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetLoneSuperadminMFA(ctx, "admin@empresa.com"); !errors.Is(err, ErrSuperadminExists) {
+		t.Errorf("com outro superadmin: %v, quero ErrSuperadminExists", err)
 	}
 }

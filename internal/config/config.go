@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 )
@@ -40,6 +41,11 @@ func LoadServer(args []string, stderr io.Writer) (Server, error) {
 	fs.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "chave privada TLS do servidor, em PEM (ou ENVMEM_TLS_KEY)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
+	}
+	// Sem isto, um comando digitado errado (como "reset-mfaa") não seria
+	// reconhecido pelo main e subiria o servidor no lugar.
+	if fs.NArg() > 0 {
+		return Server{}, fmt.Errorf("comando desconhecido %q (comandos: keygen, migrate, create-superadmin, reset-password, reset-mfa)", fs.Arg(0))
 	}
 	if cfg.DatabaseURL == "" {
 		return Server{}, errors.New("DATABASE_URL não definida")

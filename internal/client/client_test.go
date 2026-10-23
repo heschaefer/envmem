@@ -486,11 +486,15 @@ func TestUserRoutes(t *testing.T) {
 	if err := c.DeleteUser(ctx, "u1"); err != nil {
 		t.Fatal(err)
 	}
+	if err := c.ResetMFA(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
 	want := []string{
 		"GET /v1/users ",
 		`POST /v1/users {"email":"adm@empresa.com","global_role":"admin","temp_password":"` + temp + `"}`,
 		`POST /v1/users/u1/password/reset {"temp_password":"` + temp + `"}`,
 		"DELETE /v1/users/u1 ",
+		"POST /v1/users/u1/mfa/reset ",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requisições:\n%s\nquero:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

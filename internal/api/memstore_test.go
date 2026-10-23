@@ -606,13 +606,15 @@ func (m *memStore) FailTOTP(ctx context.Context, userID string) (int, error) {
 	return t.Failures, nil
 }
 
-func (m *memStore) DeleteTOTP(ctx context.Context, userID string) error {
+func (m *memStore) ResetMFA(ctx context.Context, userID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.totp[userID]; !ok {
 		return store.ErrNotFound
 	}
 	delete(m.totp, userID)
+	m.challenges = slices.DeleteFunc(m.challenges, func(c memChallenge) bool { return c.userID == userID })
+	m.sessions = slices.DeleteFunc(m.sessions, func(s memSession) bool { return s.userID == userID })
 	return nil
 }
 

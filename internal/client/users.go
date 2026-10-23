@@ -71,3 +71,13 @@ func userPath(id, suffix string) (string, error) {
 	}
 	return "/v1/users/" + url.PathEscape(id) + suffix, nil
 }
+
+// ResetMFA apaga o MFA do usuário, que o cadastra de novo no próximo
+// login, e revoga as sessões dele (POST /v1/users/{id}/mfa/reset).
+func (c *Client) ResetMFA(ctx context.Context, id string) error {
+	path, err := userPath(id, "/mfa/reset")
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodPost, path, nil, http.StatusNoContent, nil)
+}

@@ -191,3 +191,48 @@ func TestMFALock(t *testing.T) {
 	}
 	wantError(t, e.login(t, "root@empresa.com", testPassword), http.StatusForbidden, "mfa_locked")
 }
+
+// O reset do MFA destrava a conta, revoga as sessões e faz o usuário
+// cadastrar de novo; só um superadmin faz, e não para si mesmo.
+func TestResetMFA(t *testing.T) {
+	e := openEnv(t)
+	secret := e.enrollRoot(t)
+	// Um segundo superadmin, que faz o reset do primeiro.
+	e.store.addUser(store.User{Email: "outro@empresa.com", GlobalRole: store.RoleSuperadmin, PasswordHash: rootHash()})
+	other := e.sessionFor(t, "outro@empresa.com")
+	root, _ := e.store.UserByEmail(t.Context(), "root@empresa.com")
+	path := "/v1/users/" + root.ID + "/mfa/reset"
+
+	// Trava o MFA do root com 10 códigos errados.
+	for range auth.MFAMaxFailures {
+		ch := e.challenge(t, "root@empresa.com", "verify")
+		e.mfaVerify(t, ch, wrongCode(secret, e.clock.now()))
+		e.clock.add(auth.LoginBlock)
+	}
+	wantError(t, e.login(t, "root@empresa.com", testPassword), http.StatusForbidden, "mfa_locked")
+	rootToken := e.sessionFor(t, "root@empresa.com") // uma sessão aberta antes do reset
+
+	// Ninguém reseta o próprio MFA; admin e desenvolvedor não resetam
+	// nenhum (só o superadmin, decisão 36).
+	wantError(t, e.doAs(t, rootToken, http.MethodPost, path, ""), http.StatusConflict, "cannot_reset_self")
+	dev := e.addUser(t, "dev@empresa.com", testPassword, 0)
+	devToken := e.tokenFor(t, "dev@empresa.com", testPassword)
+	wantError(t, e.doAs(t, devToken, http.MethodPost, path, ""), http.StatusForbidden, "forbidden")
+	e.store.addUser(store.User{Email: "admin@empresa.com", GlobalRole: store.RoleAdmin, PasswordHash: rootHash()})
+	wantError(t, e.doAs(t, e.sessionFor(t, "admin@empresa.com"), http.MethodPost, path, ""), http.StatusForbidden, "forbidden")
+
+	if rec := e.doAs(t, other, http.MethodPost, path, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("reset: %d %s", rec.Code, rec.Body.String())
+	}
+	// As sessões do root caíram, e o próximo login pede um cadastro novo.
+	if rec := e.doAs(t, rootToken, http.MethodGet, "/v1/auth/me", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("sessão depois do reset: %d, quero 401", rec.Code)
+	}
+	e.challenge(t, "root@empresa.com", "setup")
+	if !slices.Contains(e.store.actions(), "mfa.reset:success") {
+		t.Errorf("o reset não foi para a auditoria")
+	}
+	// Sem MFA (ou usuário inexistente): 404.
+	wantError(t, e.doAs(t, other, http.MethodPost, "/v1/users/"+dev.ID+"/mfa/reset", ""), http.StatusNotFound, "mfa_not_found")
+	wantError(t, e.doAs(t, other, http.MethodPost, "/v1/users/nao-existe/mfa/reset", ""), http.StatusNotFound, "mfa_not_found")
+}
