@@ -33,6 +33,8 @@ func run(args []string) int {
 		return cmdSecrets(args[1:])
 	case "members":
 		return cmdMembers(args[1:])
+	case "users":
+		return cmdUsers(args[1:])
 	case "help", "-h", "-help", "--help":
 		usage(os.Stdout)
 		return 0
@@ -53,6 +55,7 @@ Subcomandos:
   projects   lista, cria e remove projetos
   secrets    lista, lê, grava e remove variáveis de um projeto
   members    lista, adiciona e remove membros de um projeto
+  users      cria, lista e remove usuários (superadmin)
   help       mostra esta ajuda
 
 O login grava o servidor e a CA em ~/.config/envmem/config.json; nos

@@ -33,11 +33,19 @@ func readPassword(prompt string, fromStdin bool) ([]byte, error) {
 // readNewPassword pede uma senha nova duas vezes, no terminal, e confere
 // que as duas são iguais.
 func readNewPassword() ([]byte, error) {
-	first, err := readPassword("Nova senha (de 12 a 128 caracteres): ", false)
+	return readTwice("Nova senha (de 12 a 128 caracteres): ", "Repita a nova senha: ", "as senhas não conferem")
+}
+
+// readTwice pede um valor duas vezes no terminal, sem eco, e confere que
+// as duas digitações são iguais: sem eco, um erro de digitação passaria
+// despercebido. A segunda cópia é sempre zerada; a primeira, se houver
+// erro.
+func readTwice(prompt, again, mismatch string) ([]byte, error) {
+	first, err := readPassword(prompt, false)
 	if err != nil {
 		return nil, err
 	}
-	second, err := readPassword("Repita a nova senha: ", false)
+	second, err := readPassword(again, false)
 	defer clear(second)
 	if err != nil {
 		clear(first)
@@ -45,7 +53,7 @@ func readNewPassword() ([]byte, error) {
 	}
 	if !bytes.Equal(first, second) {
 		clear(first)
-		return nil, errors.New("as senhas não conferem")
+		return nil, errors.New(mismatch)
 	}
 	return first, nil
 }
@@ -82,21 +90,7 @@ func readSecretValue(fromStdin bool) ([]byte, error) {
 		v = bytes.TrimSuffix(v, []byte("\n"))
 		return bytes.TrimSuffix(v, []byte("\r")), nil
 	}
-	first, err := readPassword("Valor (não aparece na tela): ", false)
-	if err != nil {
-		return nil, err
-	}
-	second, err := readPassword("Repita o valor: ", false)
-	defer clear(second)
-	if err != nil {
-		clear(first)
-		return nil, err
-	}
-	if !bytes.Equal(first, second) {
-		clear(first)
-		return nil, errors.New("os valores não conferem")
-	}
-	return first, nil
+	return readTwice("Valor (não aparece na tela): ", "Repita o valor: ", "os valores não conferem")
 }
 
 // confirm faz uma pergunta de sim ou não no terminal. Só "s" ou "sim"
