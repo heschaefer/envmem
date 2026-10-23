@@ -19,15 +19,16 @@ import (
 // envname.
 const newKeyChoice = "\x00nova"
 
-// canManageSecrets diz se o menu mostra ver valor, gravar e lixeira: gestor
-// nos projetos dele, admin e superadmin em todos.
-func canManageSecrets(role string) bool {
-	return role == "gestor" || role == "admin" || role == "superadmin"
+// isManager diz se o papel administra o projeto: gestor nos projetos dele,
+// admin e superadmin em todos. O menu mostra a eles ver valor, gravar,
+// lixeira e membros.
+func isManager(role string) bool {
+	return role == "gestor" || isAdmin(role)
 }
 
-// canPurge diz se o menu mostra a exclusão definitiva: só admin e
-// superadmin (decisão 11).
-func canPurge(role string) bool {
+// isAdmin diz se o papel é global de administração (admin ou superadmin):
+// excluir de vez (decisão 11), nomear gestores e criar ou remover projetos.
+func isAdmin(role string) bool {
 	return role == "admin" || role == "superadmin"
 }
 
@@ -130,26 +131,33 @@ func setSecret(c *client.Client, project string) error {
 // o valor fica num []byte zerado depois do uso, mas a cópia em string para
 // o JSON também existe lá (decisão 48).
 func readValueForm() (string, error) {
+	return readTwiceForm("Valor", "Não aparece na tela. Para valores com várias linhas, use envmem secrets set --valor-stdin.",
+		"Repita o valor", "os valores não conferem")
+}
+
+// readTwiceForm é o readTwice do modo interativo: dois campos mascarados,
+// e o segundo tem de ser igual ao primeiro.
+func readTwiceForm(title, description, again, mismatch string) (string, error) {
 	var first, second string
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewInput().
-			Title("Valor").
-			Description("Não aparece na tela. Para valores com várias linhas, use envmem secrets set --valor-stdin.").
+			Title(title).
+			Description(description).
 			EchoMode(huh.EchoModePassword).
 			Value(&first).
 			Validate(func(s string) error {
 				if s == "" {
-					return errors.New("o valor está vazio")
+					return errors.New("o campo está vazio")
 				}
 				return nil
 			}),
 		huh.NewInput().
-			Title("Repita o valor").
+			Title(again).
 			EchoMode(huh.EchoModePassword).
 			Value(&second).
 			Validate(func(s string) error {
 				if s != first {
-					return errors.New("os valores não conferem")
+					return errors.New(mismatch)
 				}
 				return nil
 			}),
@@ -200,7 +208,7 @@ func trashMenu(c *client.Client, project, role string) error {
 
 	const restore, purge, back = "restaurar", "excluir", ""
 	actions := []huh.Option[string]{huh.NewOption("Restaurar", restore)}
-	if canPurge(role) {
+	if isAdmin(role) {
 		actions = append(actions, huh.NewOption("Excluir definitivamente", purge))
 	}
 	actions = append(actions, huh.NewOption("Voltar", back))
