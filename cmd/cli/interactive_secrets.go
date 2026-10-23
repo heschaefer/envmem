@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"charm.land/huh/v2"
 
@@ -226,8 +227,8 @@ func trashMenu(c *client.Client, project, role string) error {
 		}
 		fmt.Printf("%s restaurada no projeto %s\n", key, project)
 	case purge:
-		// No menu, a confirmação custa só uma tecla; no subcomando purge,
-		// ela fica para quando o MFA existir (decisão 48).
+		// Confirmação (no menu, custa uma tecla) e o código do app, que o
+		// servidor pede de novo nesta ação (decisão 11).
 		ok := false
 		err := huh.NewConfirm().
 			Title(fmt.Sprintf("Excluir %s definitivamente?", key)).
@@ -240,9 +241,13 @@ func trashMenu(c *client.Client, project, role string) error {
 		if !ok {
 			return errCanceled
 		}
+		code, err := formMFA{}.code()
+		if err != nil {
+			return err
+		}
 		ctx, cancel := apiContext()
 		defer cancel()
-		if err := c.PurgeSecret(ctx, project, key); err != nil {
+		if err := c.PurgeSecret(ctx, project, key, strings.TrimSpace(code)); err != nil {
 			return err
 		}
 		fmt.Printf("%s excluída definitivamente do projeto %s\n", key, project)

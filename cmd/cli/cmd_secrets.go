@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -110,7 +111,13 @@ func cmdSecrets(args []string) int {
 	case "trash":
 		err = secretsTrash(ctx, c, *projeto, os.Stdout)
 	case "purge":
-		if err = c.PurgeSecret(ctx, *projeto, key); err == nil {
+		// Não tem volta: o servidor pede de novo o código do app (decisão
+		// 11). No terminal, perguntado; em scripts, uma linha do stdin.
+		var code string
+		if code, err = (terminalMFA{fromStdin: !term.IsTerminal(int(os.Stdin.Fd()))}).code(); err == nil {
+			err = c.PurgeSecret(ctx, *projeto, key, strings.TrimSpace(code))
+		}
+		if err == nil {
 			fmt.Printf("%s excluída definitivamente do projeto %s\n", key, *projeto)
 		}
 	}
@@ -337,7 +344,8 @@ Ações:
   rm NOME         manda a variável para a lixeira
   restore NOME    tira a variável da lixeira
   trash           lista a lixeira
-  purge NOME      exclui de vez uma variável da lixeira (admin e superadmin)
+  purge NOME      exclui de vez uma variável da lixeira (admin e superadmin);
+                  pede de novo o código do app autenticador
 
 O valor nunca é passado como argumento: iria para o histórico do shell e
 apareceria no "ps". As opções vêm antes do nome:

@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/heschaefer/envmem/internal/auth"
 	"github.com/heschaefer/envmem/internal/store"
-
 	"github.com/heschaefer/envmem/internal/vault"
 )
 
@@ -245,14 +246,21 @@ func TestTrash(t *testing.T) {
 // projeto pode ser apagado (decisão 30).
 func TestPurgeAndDeleteProject(t *testing.T) {
 	e := openEnv(t)
+	secret := e.giveMFA(t, "root@empresa.com")
+	// A exclusão definitiva pede o código do MFA (TestPurgeRequiresMFACode);
+	// cada código vale uma vez, então cada chamada usa o do passo seguinte.
+	code := func() string {
+		e.clock.add(30 * time.Second)
+		return `{"mfa_code":"` + auth.TOTPCode(secret, e.clock.now()) + `"}`
+	}
 	e.put(t, "demo", "DB_PASSWORD", "x")
 
-	wantError(t, e.do(t, http.MethodDelete, "/v1/projects/demo/trash/DB_PASSWORD", ""), http.StatusNotFound, "not_in_trash")
+	wantError(t, e.do(t, http.MethodDelete, "/v1/projects/demo/trash/DB_PASSWORD", code()), http.StatusNotFound, "not_in_trash")
 	e.do(t, http.MethodDelete, secretPath+"/DB_PASSWORD", "")
 	// Na lixeira, o segredo ainda está no banco: o projeto não pode sair.
 	wantError(t, e.do(t, http.MethodDelete, "/v1/projects/demo", ""), http.StatusConflict, "project_not_empty")
 
-	if rec := e.do(t, http.MethodDelete, "/v1/projects/demo/trash/DB_PASSWORD", ""); rec.Code != http.StatusNoContent {
+	if rec := e.do(t, http.MethodDelete, "/v1/projects/demo/trash/DB_PASSWORD", code()); rec.Code != http.StatusNoContent {
 		t.Fatalf("exclusão definitiva: %d %s", rec.Code, rec.Body.String())
 	}
 	wantError(t, e.do(t, http.MethodPost, secretPath+"/DB_PASSWORD/restore", ""), http.StatusNotFound, "not_in_trash")

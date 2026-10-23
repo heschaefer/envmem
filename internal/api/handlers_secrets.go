@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -297,10 +298,23 @@ func (s *server) handleRestoreSecret(w http.ResponseWriter, r *http.Request) {
 	s.trashAction(w, r, "secret.restore", Store.RestoreSecret, writeNotInTrash)
 }
 
+type purgeSecretRequest struct {
+	MFACode string `json:"mfa_code"`
+}
+
 // handlePurgeSecret exclui definitivamente um segredo que está na lixeira
-// (só admin e superadmin, decisão 11). Quando o MFA existir, esta ação vai
-// pedir o código do autenticador de novo.
+// (só admin e superadmin, decisão 11). Não tem volta, então pede de novo o
+// código do app autenticador ({"mfa_code": "..."} no corpo): uma sessão
+// roubada sozinha não basta para apagar segredos.
 func (s *server) handlePurgeSecret(w http.ResponseWriter, r *http.Request) {
+	var req purgeSecretRequest
+	if err := decodeJSON(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_body", `corpo JSON inválido (esperado {"mfa_code": "..."})`)
+		return
+	}
+	if !s.requireMFACode(w, r, req.MFACode) {
+		return
+	}
 	s.trashAction(w, r, "secret.purge", Store.PurgeSecret, writeNotInTrash)
 }
 

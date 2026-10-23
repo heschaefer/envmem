@@ -376,7 +376,7 @@ func TestSecretRoutes(t *testing.T) {
 	for name, err := range map[string]error{
 		"TrashSecret":   c.TrashSecret(ctx, "demo", "OLD"),
 		"RestoreSecret": c.RestoreSecret(ctx, "demo", "OLD"),
-		"PurgeSecret":   c.PurgeSecret(ctx, "demo", "OLD"),
+		"PurgeSecret":   c.PurgeSecret(ctx, "demo", "OLD", "123456"),
 	} {
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -397,7 +397,7 @@ func TestSecretRoutes(t *testing.T) {
 	}
 	// A ordem do map não é fixa: as três últimas só precisam ter acontecido.
 	rest := strings.Join(got[len(want):], "\n")
-	for _, w := range []string{"DELETE /v1/projects/demo/secrets/OLD ", "POST /v1/projects/demo/secrets/OLD/restore ", "DELETE /v1/projects/demo/trash/OLD "} {
+	for _, w := range []string{"DELETE /v1/projects/demo/secrets/OLD ", "POST /v1/projects/demo/secrets/OLD/restore ", `DELETE /v1/projects/demo/trash/OLD {"mfa_code":"123456"}`} {
 		if !strings.Contains(rest, w) {
 			t.Errorf("faltou a requisição %q", w)
 		}

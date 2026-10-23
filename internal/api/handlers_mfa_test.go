@@ -62,6 +62,29 @@ func (e *testEnv) enrollRoot(t *testing.T) []byte {
 	return secret
 }
 
+// giveMFA grava, direto no store, um MFA já confirmado para o usuário
+// (cifrado pelo cofre, que precisa estar aberto) e devolve o segredo. Para
+// os testes que não são sobre o cadastro.
+func (e *testEnv) giveMFA(t *testing.T, email string) []byte {
+	t.Helper()
+	u, err := e.store.UserByEmail(t.Context(), email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := auth.NewTOTPSecret()
+	env, err := e.vault.EncryptTOTP(u.ID, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.StartTOTP(t.Context(), store.TOTP{UserID: u.ID, Ciphertext: env.Ciphertext, Nonce: env.Nonce, WrappedDEK: env.WrappedDEK, DEKNonce: env.DEKNonce}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.ConfirmTOTP(t.Context(), u.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	return secret
+}
+
 // wrongCode é um código de 6 dígitos diferente do certo agora.
 func wrongCode(secret []byte, now time.Time) string {
 	if auth.TOTPCode(secret, now) == "000000" {
@@ -235,4 +258,29 @@ func TestResetMFA(t *testing.T) {
 	// Sem MFA (ou usuário inexistente): 404.
 	wantError(t, e.doAs(t, other, http.MethodPost, "/v1/users/"+dev.ID+"/mfa/reset", ""), http.StatusNotFound, "mfa_not_found")
 	wantError(t, e.doAs(t, other, http.MethodPost, "/v1/users/nao-existe/mfa/reset", ""), http.StatusNotFound, "mfa_not_found")
+}
+
+// A exclusão definitiva pede o código de novo, com as regras do login.
+func TestPurgeRequiresMFACode(t *testing.T) {
+	e := openEnv(t)
+	secret := e.giveMFA(t, "root@empresa.com")
+	e.put(t, "demo", "DB_PASSWORD", "x")
+	e.do(t, http.MethodDelete, secretPath+"/DB_PASSWORD", "")
+	purge := func(body string) *httptest.ResponseRecorder {
+		return e.do(t, http.MethodDelete, "/v1/projects/demo/trash/DB_PASSWORD", body)
+	}
+
+	wantError(t, purge(""), http.StatusForbidden, "mfa_code_required")
+	wantError(t, purge(`{"mfa_code":"`+wrongCode(secret, e.clock.now())+`"}`), http.StatusUnauthorized, "invalid_mfa_code")
+	code := auth.TOTPCode(secret, e.clock.now())
+	if rec := purge(`{"mfa_code":"` + code + `"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("exclusão com código: %d %s", rec.Code, rec.Body.String())
+	}
+	// O código vale uma vez: na próxima exclusão, só o do passo seguinte.
+	e.put(t, "demo", "DB_PASSWORD", "y")
+	e.do(t, http.MethodDelete, secretPath+"/DB_PASSWORD", "")
+	wantError(t, purge(`{"mfa_code":"`+code+`"}`), http.StatusUnauthorized, "invalid_mfa_code")
+	// Com o cofre selado, o segredo do TOTP não decifra.
+	e.vault.Seal()
+	wantError(t, purge(`{"mfa_code":"`+auth.TOTPCode(secret, e.clock.now().Add(30*time.Second))+`"}`), http.StatusServiceUnavailable, "sealed")
 }
