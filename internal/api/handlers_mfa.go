@@ -183,23 +183,10 @@ func (s *server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, err := s.vault.DecryptTOTP(user.ID, vault.Envelope{
-		Ciphertext: t.Ciphertext, Nonce: t.Nonce, WrappedDEK: t.WrappedDEK, DEKNonce: t.DEKNonce,
-	})
-	if errors.Is(err, vault.ErrSealed) {
-		writeSealed(w)
+	step, ok, handled := s.matchTOTP(w, user, t, req.Code)
+	if handled {
 		return
 	}
-	if err != nil {
-		// Com o cofre aberto, só não decifra uma linha adulterada ou
-		// copiada de outro usuário (AAD).
-		s.logger.Error("MFA: segredo não decifra: possível adulteração no banco", "user_id", user.ID)
-		writeError(w, http.StatusInternalServerError, "decrypt_failed", "não foi possível conferir o código")
-		return
-	}
-	step, ok := auth.VerifyTOTP(secret, req.Code, s.now(), t.LastStep)
-	clear(secret)
-
 	if !ok {
 		s.mfaFailure(w, r, user, hash, confirmed, keys)
 		return
@@ -225,14 +212,93 @@ func (s *server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// matchTOTP decifra o segredo do TOTP e confere o código, devolvendo o
+// passo aceito. handled indica que já respondeu (cofre selado ou segredo
+// que não decifra), e o handler só retorna.
+func (s *server) matchTOTP(w http.ResponseWriter, user store.User, t store.TOTP, code string) (step int64, ok, handled bool) {
+	secret, err := s.vault.DecryptTOTP(user.ID, vault.Envelope{
+		Ciphertext: t.Ciphertext, Nonce: t.Nonce, WrappedDEK: t.WrappedDEK, DEKNonce: t.DEKNonce,
+	})
+	if errors.Is(err, vault.ErrSealed) {
+		writeSealed(w)
+		return 0, false, true
+	}
+	if err != nil {
+		// Com o cofre aberto, só não decifra uma linha adulterada ou
+		// copiada de outro usuário (AAD).
+		s.logger.Error("MFA: segredo não decifra: possível adulteração no banco", "user_id", user.ID)
+		writeError(w, http.StatusInternalServerError, "decrypt_failed", "não foi possível conferir o código")
+		return 0, false, true
+	}
+	step, ok = auth.VerifyTOTP(secret, code, s.now(), t.LastStep)
+	clear(secret)
+	return step, ok, false
+}
+
+// requireMFACode confere o código do MFA pedido de novo numa ação sensível
+// (a exclusão definitiva, decisão 11), para quem já tem sessão: mesmo com
+// um token roubado, a ação exige o app. Valem as regras do login: cada
+// código uma vez, limite de tentativas e trava. Se não puder seguir, já
+// respondeu e devolve falso.
+func (s *server) requireMFACode(w http.ResponseWriter, r *http.Request, code string) bool {
+	user := sessionFrom(r.Context()).user
+	if code == "" {
+		writeError(w, http.StatusForbidden, "mfa_code_required", "esta ação pede o código do app autenticador")
+		return false
+	}
+	keys := []string{"ip:" + clientIP(r), "email:" + user.Email}
+	if wait := s.limiter.Wait(keys...); wait > 0 {
+		writeTooManyAttempts(w, wait)
+		return false
+	}
+	t, err := s.store.TOTPByUser(r.Context(), user.ID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && t.ConfirmedAt == nil) {
+		// Sessão aberta antes do MFA existir: o próximo login cadastra.
+		writeError(w, http.StatusForbidden, "mfa_setup_required",
+			"esta ação pede o código do MFA, que ainda não foi cadastrado; entre de novo com envmem login")
+		return false
+	}
+	if err != nil {
+		s.logger.Error("MFA: ler cadastro", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return false
+	}
+	if t.Failures >= auth.MFAMaxFailures {
+		writeMFALocked(w)
+		return false
+	}
+	step, ok, handled := s.matchTOTP(w, user, t, code)
+	if handled {
+		return false
+	}
+	if !ok {
+		s.mfaFailure(w, r, user, nil, true, keys)
+		return false
+	}
+	err = s.store.UseTOTPStep(r.Context(), user.ID, step, auth.MFAMaxFailures)
+	if errors.Is(err, store.ErrConflict) {
+		writeInvalidMFACode(w) // o mesmo código, usado ao mesmo tempo em outra requisição
+		return false
+	}
+	if err != nil {
+		s.logger.Error("MFA: usar código", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "erro interno")
+		return false
+	}
+	return true
+}
+
 // mfaFailure conta um código errado e responde. Se a conta chegou ao
 // limite, o MFA trava agora, e o evento mfa.locked fica na auditoria.
 func (s *server) mfaFailure(w http.ResponseWriter, r *http.Request, user store.User, hash []byte, confirmed bool, keys []string) {
 	ctx := r.Context()
 	s.limiter.Failure(keys...)
-	if n, err := s.store.FailMFAChallenge(ctx, hash); err == nil && n >= auth.MFAChallengeMaxFailures {
-		if err := s.store.DeleteMFAChallenge(ctx, hash); err != nil {
-			s.logger.Error("MFA: descartar desafio", "err", err)
+	// Sem desafio (hash nil): código pedido de novo numa ação, com sessão.
+	if hash != nil {
+		if n, err := s.store.FailMFAChallenge(ctx, hash); err == nil && n >= auth.MFAChallengeMaxFailures {
+			if err := s.store.DeleteMFAChallenge(ctx, hash); err != nil {
+				s.logger.Error("MFA: descartar desafio", "err", err)
+			}
 		}
 	}
 	locked := false

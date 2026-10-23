@@ -119,13 +119,17 @@ func (c *Client) RestoreSecret(ctx context.Context, project, key string) error {
 }
 
 // PurgeSecret exclui definitivamente um segredo da lixeira
-// (DELETE /v1/projects/{project}/trash/{key}).
-func (c *Client) PurgeSecret(ctx context.Context, project, key string) error {
+// (DELETE /v1/projects/{project}/trash/{key}). Não tem volta, e o servidor
+// pede de novo o código do app autenticador (decisão 11), que vai no corpo.
+func (c *Client) PurgeSecret(ctx context.Context, project, key, mfaCode string) error {
 	path, err := secretPath(project, "/trash/", key)
 	if err != nil {
 		return err
 	}
-	return c.doJSON(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
+	in := struct {
+		MFACode string `json:"mfa_code"`
+	}{mfaCode}
+	return c.doJSON(ctx, http.MethodDelete, path, in, http.StatusNoContent, nil)
 }
 
 // TrashedSecret é um segredo na lixeira.

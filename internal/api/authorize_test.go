@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/heschaefer/envmem/internal/auth"
 	"github.com/heschaefer/envmem/internal/store"
 )
 
@@ -14,6 +15,7 @@ import (
 type rbacEnv struct {
 	*testEnv
 	tokens map[string]string // papel -> token
+	mfa    map[string][]byte // papel -> segredo do TOTP (superadmin e admin)
 }
 
 func newRBACEnv(t *testing.T) *rbacEnv {
@@ -21,7 +23,8 @@ func newRBACEnv(t *testing.T) *rbacEnv {
 	e := openEnv(t) // projeto demo
 	outro := e.createProject(t, "outro")
 	demo, _ := e.store.ProjectByName(t.Context(), "demo")
-	re := &rbacEnv{testEnv: e, tokens: map[string]string{"superadmin": e.token}}
+	re := &rbacEnv{testEnv: e, tokens: map[string]string{"superadmin": e.token}, mfa: map[string][]byte{}}
+	re.mfa["superadmin"] = e.giveMFA(t, "root@empresa.com")
 
 	users := []struct{ name, global, demoRole string }{
 		{"admin", store.RoleAdmin, ""},
@@ -36,6 +39,9 @@ func newRBACEnv(t *testing.T) *rbacEnv {
 			e.store.setMember(demo.ID, created.ID, u.demoRole)
 		}
 		re.tokens[u.name] = e.sessionFor(t, email)
+		if u.global != "" {
+			re.mfa[u.name] = e.giveMFA(t, email)
+		}
 	}
 	// O gestor do demo é desenvolvedor no outro: o papel vale por projeto.
 	gestor, _ := e.store.UserByEmail(t.Context(), "gestor@empresa.com")
@@ -83,7 +89,7 @@ func TestRouteRoleMatrix(t *testing.T) {
 			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
 		{"GET", "/v1/projects/demo/trash", "", map[string]string{
 			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
-		{"DELETE", "/v1/projects/demo/trash/K_{ROLE}", "", map[string]string{
+		{"DELETE", "/v1/projects/demo/trash/K_{ROLE}", `{"mfa_code":"{code}"}`, map[string]string{
 			"superadmin": ok, "admin": ok, "gestor": forbidden, "desenvolvedor": forbidden, "de-fora": notFound}},
 		{"GET", "/v1/projects/demo/members", "", map[string]string{
 			"superadmin": ok, "admin": ok, "gestor": ok, "desenvolvedor": forbidden, "de-fora": notFound}},
@@ -100,7 +106,11 @@ func TestRouteRoleMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		for _, role := range roles {
-			r := strings.NewReplacer("{role}", role, "{ROLE}", strings.ToUpper(strings.ReplaceAll(role, "-", "_")))
+			code := "000000"
+			if secret := e.mfa[role]; secret != nil {
+				code = auth.TOTPCode(secret, e.clock.now())
+			}
+			r := strings.NewReplacer("{role}", role, "{ROLE}", strings.ToUpper(strings.ReplaceAll(role, "-", "_")), "{code}", code)
 			path, body := r.Replace(tt.path), r.Replace(tt.body)
 			rec := e.doAs(t, e.tokens[role], tt.method, path, body)
 
