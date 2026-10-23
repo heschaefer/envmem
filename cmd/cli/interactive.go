@@ -35,6 +35,10 @@ const (
 	actBack menuAction = iota
 	actListNames
 	actRun
+	actShowValue
+	actSetSecret
+	actTrashSecret
+	actTrash
 )
 
 // actionItem é uma opção do menu: o texto mostrado e a ação.
@@ -50,6 +54,18 @@ func projectActions(role string) []actionItem {
 	items := []actionItem{
 		{"Rodar um comando", actRun},
 		{"Ver variáveis disponíveis (só nomes)", actListNames},
+	}
+	if canManageSecrets(role) {
+		trash := "Ver a lixeira (restaurar)"
+		if canPurge(role) {
+			trash = "Ver a lixeira (restaurar ou excluir de vez)"
+		}
+		items = append(items,
+			actionItem{"Ver o valor de uma variável", actShowValue},
+			actionItem{"Gravar uma variável", actSetSecret},
+			actionItem{"Mandar uma variável para a lixeira", actTrashSecret},
+			actionItem{trash, actTrash},
+		)
 	}
 	return append(items, actionItem{"Voltar", actBack})
 }
@@ -159,9 +175,21 @@ func projectMenu(c *client.Client, p client.Project) error {
 			err = listNames(c, p.Name)
 		case actRun:
 			err = runCommand(c, p.Name)
+		case actShowValue:
+			err = showValue(c, p.Name)
+		case actSetSecret:
+			err = setSecret(c, p.Name)
+		case actTrashSecret:
+			err = trashSecret(c, p.Name)
+		case actTrash:
+			err = trashMenu(c, p.Name, p.Role)
 		}
 		if errors.Is(err, huh.ErrUserAborted) {
 			return err
+		}
+		if errors.Is(err, errCanceled) {
+			fmt.Fprintln(os.Stderr, "cancelado")
+			continue
 		}
 		if err != nil {
 			printError(err)
