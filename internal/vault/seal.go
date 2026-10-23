@@ -104,3 +104,25 @@ func (v *Vault) DecryptSecret(projectID, key string, env Envelope) ([]byte, erro
 	}
 	return decrypt(v.masterKey, env, secretAAD(projectID, key))
 }
+
+// EncryptTOTP cifra o segredo do TOTP de um usuário (decisão 36), com o
+// mesmo envelope dos segredos de projeto e o AAD do usuário (totpAAD).
+func (v *Vault) EncryptTOTP(userID string, secret []byte) (Envelope, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.masterKey == nil {
+		return Envelope{}, ErrSealed
+	}
+	return encrypt(v.masterKey, secret, totpAAD(userID))
+}
+
+// DecryptTOTP decifra o segredo do TOTP de um usuário. Falha se o envelope
+// não for deste usuário. Quem chama deve zerar o resultado.
+func (v *Vault) DecryptTOTP(userID string, env Envelope) ([]byte, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.masterKey == nil {
+		return nil, ErrSealed
+	}
+	return decrypt(v.masterKey, env, totpAAD(userID))
+}

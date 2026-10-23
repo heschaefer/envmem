@@ -107,3 +107,34 @@ func TestSeal(t *testing.T) {
 		t.Errorf("EncryptSecret depois do Seal: %v", err)
 	}
 }
+
+// O segredo do TOTP só abre para o mesmo usuário, e os dois tipos de
+// envelope (TOTP e segredo de projeto) não se confundem.
+func TestTOTPEnvelope(t *testing.T) {
+	if _, err := New().EncryptTOTP("u1", []byte("x")); !errors.Is(err, ErrSealed) {
+		t.Errorf("EncryptTOTP selado: %v, quero ErrSealed", err)
+	}
+
+	v, _ := unsealed(t)
+	secret := []byte("12345678901234567890")
+	env, err := v.EncryptTOTP("u1", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := v.DecryptTOTP("u1", env)
+	if err != nil || !bytes.Equal(got, secret) {
+		t.Fatalf("DecryptTOTP = %q, %v", got, err)
+	}
+	// A linha copiada para outro usuário não abre.
+	if _, err := v.DecryptTOTP("u2", env); !errors.Is(err, ErrDecrypt) {
+		t.Errorf("abriu para outro usuário: %v", err)
+	}
+	// Um segredo de projeto não passa por TOTP, mesmo com ids parecidos.
+	senv, err := v.EncryptSecret("u1", "K", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.DecryptTOTP("u1", senv); !errors.Is(err, ErrDecrypt) {
+		t.Errorf("um segredo de projeto abriu como TOTP: %v", err)
+	}
+}

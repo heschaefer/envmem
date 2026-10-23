@@ -775,3 +775,118 @@ func TestAuditAndInTx(t *testing.T) {
 		t.Fatalf("InsertSecretVersion dentro do InTx: %v", err)
 	}
 }
+
+// O ciclo do MFA no banco, operando como envmem_app: cadastro pendente,
+// confirmação, cada passo uma vez só, reset e desafios do login.
+func TestMFA(t *testing.T) {
+	ctx := context.Background()
+	url := tempSchemaURL(t)
+	owner := openStore(t, url)
+	if err := owner.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, asAppRole(url))
+	u, err := s.CreateFirstSuperadmin(ctx, "admin@empresa.com", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.TOTPByUser(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("sem MFA: %v, quero ErrNotFound", err)
+	}
+	totp := func(ct string) TOTP {
+		return TOTP{UserID: u.ID, Ciphertext: []byte(ct), Nonce: nonce(), WrappedDEK: []byte("dek"), DEKNonce: nonce()}
+	}
+
+	// Um cadastro pendente pode ser recomeçado; confirmado, não.
+	if err := s.StartTOTP(ctx, totp("primeiro")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartTOTP(ctx, totp("recomeço")); err != nil {
+		t.Fatalf("recomeçar cadastro pendente: %v", err)
+	}
+	got, err := s.TOTPByUser(ctx, u.ID)
+	if err != nil || string(got.Ciphertext) != "recomeço" || got.ConfirmedAt != nil {
+		t.Fatalf("pendente = %+v, %v", got, err)
+	}
+	// Pendente não vale para o login: UseTOTPStep recusa.
+	if err := s.UseTOTPStep(ctx, u.ID, 100); !errors.Is(err, ErrConflict) {
+		t.Errorf("passo com cadastro pendente: %v, quero ErrConflict", err)
+	}
+	if err := s.ConfirmTOTP(ctx, u.ID, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ConfirmTOTP(ctx, u.ID, 101); !errors.Is(err, ErrConflict) {
+		t.Errorf("confirmar duas vezes: %v, quero ErrConflict", err)
+	}
+	if err := s.StartTOTP(ctx, totp("troca")); !errors.Is(err, ErrConflict) {
+		t.Errorf("trocar um cadastro confirmado: %v, quero ErrConflict", err)
+	}
+
+	// Cada passo vale uma vez: o da confirmação já conta como usado.
+	for step, want := range map[int64]error{100: ErrConflict, 99: ErrConflict, 101: nil} {
+		if err := s.UseTOTPStep(ctx, u.ID, step); !errors.Is(err, want) {
+			t.Errorf("UseTOTPStep(%d) = %v, quero %v", step, err, want)
+		}
+	}
+	if err := s.UseTOTPStep(ctx, u.ID, 101); !errors.Is(err, ErrConflict) {
+		t.Error("o mesmo passo foi aceito duas vezes")
+	}
+
+	// Gestor de algum projeto precisa de MFA; membro só desenvolvedor, não.
+	p := createProject(t, s, "demo")
+	dev, err := s.CreateUser(ctx, "dev@empresa.com", "", "hash", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMember(ctx, p.ID, dev.ID, "desenvolvedor"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ManagesAnyProject(ctx, dev.ID); err != nil || ok {
+		t.Errorf("desenvolvedor: ManagesAnyProject = %v, %v", ok, err)
+	}
+	if err := s.SetMember(ctx, p.ID, dev.ID, "gestor"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ManagesAnyProject(ctx, dev.ID); err != nil || !ok {
+		t.Errorf("gestor: ManagesAnyProject = %v, %v", ok, err)
+	}
+
+	// Desafios: só o hash, validade pelo relógio do banco, contagem de
+	// falhas e uso único.
+	hash := func(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+	if err := s.CreateMFAChallenge(ctx, hash(1), u.ID, time.Now().Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateMFAChallenge(ctx, hash(2), u.ID, time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if id, n, err := s.MFAChallenge(ctx, hash(1)); err != nil || id != u.ID || n != 0 {
+		t.Fatalf("MFAChallenge = %q, %d, %v", id, n, err)
+	}
+	if _, _, err := s.MFAChallenge(ctx, hash(2)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("desafio vencido: %v, quero ErrNotFound", err)
+	}
+	for want := 1; want <= 2; want++ {
+		if n, err := s.FailMFAChallenge(ctx, hash(1)); err != nil || n != want {
+			t.Errorf("FailMFAChallenge = %d, %v; quero %d", n, err, want)
+		}
+	}
+	if err := s.DeleteMFAChallenge(ctx, hash(1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.MFAChallenge(ctx, hash(1)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("desafio usado: %v, quero ErrNotFound", err)
+	}
+
+	// Reset apaga o MFA; apagar o usuário apaga MFA e desafios (CASCADE).
+	if err := s.DeleteTOTP(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteTOTP(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("reset sem MFA: %v, quero ErrNotFound", err)
+	}
+	if err := s.DeleteTOTP(ctx, "nao-e-uuid"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("id inválido: %v, quero ErrNotFound", err)
+	}
+}

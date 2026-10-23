@@ -118,3 +118,15 @@ func secretAAD(projectID, key string) []byte {
 	b = append(b, key...)
 	return b
 }
+
+// totpAAD monta o contexto do segredo do TOTP (MFA) de um usuário: rótulo
+// próprio e o id do usuário. O rótulo diferente impede que um envelope de
+// segredo de projeto seja aceito como TOTP (e vice-versa); o id impede que
+// a linha de um usuário, copiada no banco para outro, decifre: quem
+// conhece o próprio segredo de TOTP não consegue usá-lo na conta de outra
+// pessoa.
+func totpAAD(userID string) []byte {
+	b := []byte("envmem/totp/v1")
+	b = binary.AppendUvarint(b, uint64(len(userID)))
+	return append(b, userID...)
+}
