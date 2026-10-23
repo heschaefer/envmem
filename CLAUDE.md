@@ -65,7 +65,7 @@ Um **gerenciador de segredos auto-hospedado** para equipes de desenvolvimento. O
 
 **CLI**
 - Subcomandos com `switch` em `os.Args[1]` e um `flag.NewFlagSet` por subcomando (sem cobra)
-- Modo interativo: `github.com/charmbracelet/huh`
+- Modo interativo: huh v2 (`charm.land/huh/v2`, sobre Bubble Tea v2; a v1 ficava em `github.com/charmbracelet/huh`)
 - Injeção: `os/exec` (`LookPath`) e `syscall` (`Exec`). Só Linux e macOS
 - Leitura de senha sem eco: `golang.org/x/term` (nos subcomandos) ou campo de senha do huh (no modo interativo)
 - Configuração em `~/.config/envmem/config.json` (endereço do servidor e caminho do certificado da CA), gravada no `envmem login`
