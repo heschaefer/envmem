@@ -246,4 +246,5 @@ Nenhuma delas trava as Fatias 1 e 2.
 - **Não tomar decisões de arquitetura sozinho.** Perguntar quando algo não está decidido aqui.
 - **Não puxar coisas do TCC II** (prompt do envmem, rotação, OIDC) sem eu pedir. MFA só depois do núcleo pronto.
 - **Mudanças pequenas e testáveis**, uma fatia de cada vez, com teste quando fizer sentido, e um commit por passo.
+- **Commits sem `Co-Authored-By`** nem outra linha de atribuição à IA. O uso do Claude Code fica declarado no `README.md` (seção "Uso de IA").
 - **Textos do TCC:** sem travessões, fonte Arial, citações indiretas no padrão ABNT, sem exagero de citações, e só citar fontes que eu li.
